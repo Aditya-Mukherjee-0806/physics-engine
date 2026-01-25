@@ -20,10 +20,9 @@ The project uses the SDL2 library to create and draw objects to the simulation w
 
 ### Installation
 
-Clone the repository and open the project folder.
+Clone the repository.
 ```
-git clone https://github.com/Aditya-Mukherjee-0806/SDL2-Projects
-cd physics_engine
+git clone https://github.com/Aditya-Mukherjee-0806/physics-engine
 ```
 
 ### Execution
