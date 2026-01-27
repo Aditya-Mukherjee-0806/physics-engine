@@ -15,6 +15,9 @@
 #define LOG_FILE "log.txt"
 #define LOG_INTERVAL_SECS 1
 #define INPUT_BUFFER_SIZE 128
+#define PERFECTLY_ELASTIC 1
+#define INELASTIC 0
+#define DEFAULT_ELASTICITY INELASTIC
 
 #define RGB_RED 255, 0, 0
 #define RGB_GREEN 0, 255, 0
@@ -53,16 +56,17 @@ CIRCLE_OBJ *circle_object_arr;
 int arr_cap = DEFAULT_ARR_CAPACITY, arr_size = 0;
 SDL_mutex *shared_data_mutex;
 SDL_bool is_simulation_paused = SDL_FALSE;
+Uint8 elasticity = DEFAULT_ELASTICITY;
 
 SDL_bool isPointInsideCircle(VECTOR_2D point, CIRCLE_OBJ circle_obj);
 void logArrInfo();
 void logInfoOf(CIRCLE_OBJ circle_obj);
 void createNewCircleObj(Uint32 color, double radius, double mass, VECTOR_2D pos, VECTOR_2D vel);
-void runSimulation(Uint8 elasticity);
+void runSimulation();
 void sanitiseObjectArray();
-void simulateForces(Uint8 elasticity);
-void simulateGravitationalForce(Uint8 elasticity);
-void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2, Uint8 elasticity);
+void simulateForces();
+void simulateGravitationalForce();
+void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2);
 void updatePositions();
 void FillCircle(CIRCLE_OBJ circle_obj);
 int processUserInput(void *data);
@@ -96,37 +100,36 @@ int main()
     shared_data_mutex = SDL_CreateMutex();
     SDL_Thread *input_thread = SDL_CreateThread(processUserInput, "input thread", (void *)colors);
 
-    // for (int i = 0; i < arr_cap; i++)
-    // {
-    //     int radius = rand() % (MAX_RADIUS - MIN_RADIUS) + MIN_RADIUS;
-    //     Uint32 color = colors[i % num_colors];
-    //     VECTOR_2D pos = {rand() % WINDOW_WIDTH, rand() % WINDOW_HEIGHT};
-    //     VECTOR_2D vel = {
-    //         (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1),
-    //         (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1),
-    //     };
-    //     createNewCircleObj(color, radius, π * radius * radius * DENSITY, pos, vel);
-    // }
+    for (int i = 0; i < arr_cap; i++)
+    {
+        int radius = rand() % (MAX_RADIUS - MIN_RADIUS) + MIN_RADIUS;
+        Uint32 color = colors[i % num_colors];
+        VECTOR_2D pos = {rand() % WINDOW_WIDTH, rand() % WINDOW_HEIGHT};
+        VECTOR_2D vel = {
+            (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1),
+            (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1),
+        };
+        createNewCircleObj(color, radius, π * radius * radius * DENSITY, pos, vel);
+    }
 
-    // Central massive body (like the Sun)
-    VECTOR_2D pos1 = {WINDOW_WIDTH / 2.0, WINDOW_HEIGHT / 2.0};
-    VECTOR_2D vel1 = {0, 0};
-    double radius1 = 40;
-    double mass1 = 100000000;
-    createNewCircleObj(SDL_MapRGB(surface->format, RGB_YELLOW), radius1, mass1, pos1, vel1);
+    // // Central massive body (like the Sun)
+    // VECTOR_2D pos1 = {WINDOW_WIDTH / 2.0, WINDOW_HEIGHT / 2.0};
+    // VECTOR_2D vel1 = {0, 0};
+    // double radius1 = 40;
+    // double mass1 = 100000000;
+    // createNewCircleObj(SDL_MapRGB(surface->format, RGB_YELLOW), radius1, mass1, pos1, vel1);
 
-    // Smaller orbiting body (like a planet)
-    double distance = 300; // distance from center
-    VECTOR_2D pos2 = {pos1.x + distance, pos1.y};
-    double radius2 = 20; // smaller radius
-    double mass2 = 100000;
+    // // Smaller orbiting body (like a planet)
+    // double distance = 300; // distance from center
+    // VECTOR_2D pos2 = {pos1.x + distance, pos1.y};
+    // double radius2 = 20; // smaller radius
+    // double mass2 = 100000;
 
-    // Circular orbit velocity perpendicular to radius
-    double v = SDL_sqrt(G * mass1 / distance);
-    VECTOR_2D vel2 = {0, -v}; // moving upwards for clockwise orbit
-    createNewCircleObj(SDL_MapRGB(surface->format, RGB_CYAN), radius2, mass2, pos2, vel2);
+    // // Circular orbit velocity perpendicular to radius
+    // double v = SDL_sqrt(G * mass1 / distance);
+    // VECTOR_2D vel2 = {0, -v}; // moving upwards for clockwise orbit
+    // createNewCircleObj(SDL_MapRGB(surface->format, RGB_CYAN), radius2, mass2, pos2, vel2);
 
-    Uint8 elasticity = 1;
     int frames = 0;
     double frame_time_sum = 0, max_frame_time = 0, min_frame_time = dt;
     SDL_bool application_running = SDL_TRUE;
@@ -160,7 +163,7 @@ int main()
                 break;
             }
         }
-        if(is_simulation_paused)
+        if (is_simulation_paused)
         {
             SDL_Delay(dt);
             continue;
@@ -220,15 +223,9 @@ void logInfoOf(CIRCLE_OBJ circle_obj)
 {
     if (!circle_obj.alive)
     {
-        // printf("is Null.\n");
         fprintf(log_file, "is Null.\n");
         return;
     }
-
-    // printf("Radius = %lf\n", circle_obj.radius);
-    // printf("Mass = %lf\n", circle_obj.phys_comp.mass);
-    // printf("Position = (%lf, %lf)\n", circle_obj.phys_comp.pos.x, circle_obj.phys_comp.pos.y);
-    // printf("Velocity = (%lf, %lf)\n", circle_obj.phys_comp.vel.x, circle_obj.phys_comp.vel.y);
 
     fprintf(log_file, "Radius = %lf\n", circle_obj.radius);
     fprintf(log_file, "Mass = %lf\n", circle_obj.phys_comp.mass);
@@ -273,7 +270,7 @@ void createNewCircleObj(Uint32 color, double radius, double mass, VECTOR_2D pos,
     SDL_UnlockMutex(shared_data_mutex);
 }
 
-void runSimulation(Uint8 elasticity)
+void runSimulation()
 {
     SDL_LockMutex(shared_data_mutex);
 
@@ -312,12 +309,12 @@ void sanitiseObjectArray()
     }
 }
 
-void simulateForces(Uint8 elasticity)
+void simulateForces()
 {
-    simulateGravitationalForce(elasticity);
+    simulateGravitationalForce();
 }
 
-void simulateGravitationalForce(Uint8 elasticity)
+void simulateGravitationalForce()
 {
     for (int i = 0; i < arr_size - 1; i++)
     {
@@ -336,7 +333,7 @@ void simulateGravitationalForce(Uint8 elasticity)
             double dist = SDL_sqrt(SDL_pow(pos1.x - pos2.x, 2) + SDL_pow(pos1.y - pos2.y, 2));
             if (dist < circle_object_arr[i].radius + circle_object_arr[j].radius)
             {
-                handleCollision(circle_object_arr + i, circle_object_arr + j, elasticity);
+                handleCollision(circle_object_arr + i, circle_object_arr + j);
 
                 if (elasticity == 0)
                     // stop calculating with circles[i] in current frame in case of merge
@@ -354,7 +351,7 @@ void simulateGravitationalForce(Uint8 elasticity)
     }
 }
 
-void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2, Uint8 elasticity)
+void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2)
 {
     double m1 = c1->phys_comp.mass;
     double m2 = c2->phys_comp.mass;
@@ -435,9 +432,9 @@ int SDLCALL processUserInput(void *data)
 {
     const Uint32 *colors = (Uint32 *)(data);
     printf("Supported Commands: create, clear, set, pause, resume\n");
-    printf("Reading input...\n");
-    while (1)
+    while (SDL_TRUE)
     {
+        printf("$ ");
         char input[INPUT_BUFFER_SIZE];
         char command[10];
         fgets(input, INPUT_BUFFER_SIZE, stdin);
@@ -453,7 +450,7 @@ int SDLCALL processUserInput(void *data)
         else if (strcasecmp(command, "resume") == 0)
             handleResumeCommand(input);
         else
-            printf("%s is not a supported command\n", command);
+            printf("command not supported: \'%s\'\n", command);
         // char *command = strtok(input, " ");
         // if (strcasecmp(command, "create") != 0)
         // {
@@ -496,6 +493,8 @@ int SDLCALL processUserInput(void *data)
 
 void handleCreateCommand(char *input)
 {
+    char *delims = " \t\r\n";
+    strtok(input, delims); // skip the command
 }
 
 void handleClearCommand(char *input)
@@ -504,91 +503,173 @@ void handleClearCommand(char *input)
     char *delims = " \t\r\n";
     strtok(input, delims); // skip the command
     char *flag = strtok(NULL, delims);
-    if (flag == NULL || strcasecmp(flag, "--all") == 0)
+    int id;
+    if (flag == NULL || strcasecmp(flag, "--all") == 0 || strcasecmp(flag, "-a") == 0)
     {
         // clear the object array before the next frame
         arr_size = 0;
         arr_cap = DEFAULT_ARR_CAPACITY;
     }
+    else if (sscanf(flag, "--id=%d", &id) == 1)
+    {
+        CIRCLE_OBJ *circleFound = findCircleById(id);
+        if (circleFound != NULL)
+            circleFound->alive = SDL_FALSE;
+        else
+            printf("clear: could not find circle with id: %d\n", id);
+    }
     else if (strcasecmp(flag, "--id") == 0)
     {
         char *id_str = strtok(NULL, delims);
         if (id_str == NULL)
-            printf("ID not provided\n");
+        {
+            printf("clear: option requires an argument -- \'%s\'\n", flag);
+            printf("Try 'clear --help' for more information.\n");
+        }
         else
         {
-            int id;
             if (sscanf(id_str, "%d", &id) != 1)
-                printf("ID field is invalid\n");
+            {
+                printf("clear: invalid value for %s: expected integer, got \'%s\'\n", flag, id_str);
+                printf("Try 'clear --help' for more information.\n");
+            }
             else
             {
                 CIRCLE_OBJ *circleFound = findCircleById(id);
                 if (circleFound != NULL)
                     circleFound->alive = SDL_FALSE;
                 else
-                    printf("Circle with ID: %d does not exist\n", id);
+                    printf("clear: could not find circle with id: %d\n", id);
             }
         }
     }
-    else if(strcasecmp(flag, "--help") == 0)
+    else if (strcasecmp(flag, "--help") == 0)
     {
         printf("Usage: clear [OPTION]\n");
-        printf("Clears all objects or optionally, a single one specified by its id\n");
+        printf("Clears all objects or optionally, a single one specified by its id.\n");
         printf("\n");
-        printf("\t--id NUM\tclear only the object whose id is NUM\n");
+        printf("-a, --all\tclears all objects; same as \'clear\'");
+        printf("\t--id[=]NUM\tclear only the object with id=NUM, if it exists\n");
         printf("\t--help\t\tdisplay this help and exit\n");
     }
     else
-        printf("Invalid Flag: %s\n", flag);
+    {
+        printf("clear: invalid option -- \'%s\'\n", flag);
+        printf("Try 'clear --help' for more information.\n");
+    }
 
     SDL_UnlockMutex(shared_data_mutex);
 }
 
 void handleSetCommand(char *input)
 {
+    char *delims = " \t\r\n";
+    strtok(input, delims); // skip the command
+    char *flag;
+    SDL_bool is_flag_provided = SDL_FALSE;
+    while ((flag = strtok(NULL, delims)) != NULL)
+    {
+        is_flag_provided = SDL_TRUE;
+        int flag_value;
+        if (sscanf(flag, "--elasticity=%d", &flag_value) == 1 || sscanf(flag, "-e=%d", &flag_value) == 1)
+        {
+            if (flag_value == PERFECTLY_ELASTIC || flag_value == INELASTIC)
+                elasticity = flag_value;
+            else
+            {
+                printf("set: elasticity can either be 0 or 1, not %d\n", flag_value);
+                printf("Try 'set --help' for more information.\n");
+            }
+        }
+        else if (strcasecmp(flag, "-e") == 0 || strcasecmp(flag, "--elasticity") == 0)
+        {
+            char *flag_val_str = strtok(NULL, delims);
+            if (flag_val_str == NULL)
+            {
+                printf("set: option requires an argument -- \'%s\'\n", flag);
+                printf("Try 'set --help' for more information.\n");
+            }
+            else if (sscanf(flag_val_str, "%d", &flag_value) != 1)
+            {
+                printf("set: invalid value for %s: expected integer, got \'%s\'\n", flag, flag_val_str);
+                printf("Try 'set --help' for more information.\n");
+            }
+            else
+            {
+                if (flag_value == PERFECTLY_ELASTIC || flag_value == INELASTIC)
+                    elasticity = flag_value;
+                else
+                {
+                    printf("set: elasticity can either be 0 or 1, not %d\n", flag_value);
+                    printf("Try 'set --help' for more information.\n");
+                }
+            }
+        }
+        else if (strcasecmp(flag, "--help") == 0)
+        {
+            printf("Usage: set OPTION...\n");
+            printf("Set the value of any supported mathematical variable in the engine.\n");
+            printf("\n");
+            printf("Mandatory arguments to long options are mandatory for short options too.\n");
+            printf("-e, --elasticity[=]{0|1}\tset collisions to be inelastic (0), or perfectly elastic (1)\n");
+            printf("\t--help\tdisplay this help and exit\n");
+        }
+        else
+        {
+            printf("set: invalid option -- \'%s\'\n", flag);
+            printf("Try 'set --help' for more information.\n");
+        }
+    }
+    if (!is_flag_provided)
+    {
+        printf("Usage: set OPTION...\n");
+        printf("Try 'set --help' for more information.\n");
+    }
 }
 
 void handlePauseCommand(char *input)
 {
     char *delims = " \t\r\n";
-    strtok(input, delims); //skip the command
+    strtok(input, delims); // skip the command
     char *flag = strtok(NULL, delims);
-    if(flag == NULL)
+    if (flag == NULL)
     {
         is_simulation_paused = SDL_TRUE;
     }
-    else if(strcasecmp(flag, "--help") == 0)
+    else if (strcasecmp(flag, "--help") == 0)
     {
         printf("Usage: pause [OPTION]\n");
-        printf("Pause the simulation if not already paused, otherwise do nothing\n");
+        printf("Pause the simulation if not already paused, otherwise do nothing.\n");
         printf("\n");
         printf("\t--help\tdisplay this help and exit\n");
     }
     else
     {
-        printf("Invalid Flag: %s\n", flag);
+        printf("pause: invalid option -- \'%s\'\n", flag);
+        printf("Try 'pause --help' for more information.\n");
     }
 }
 
 void handleResumeCommand(char *input)
 {
     char *delims = " \t\r\n";
-    strtok(input, delims); //skip the command
+    strtok(input, delims); // skip the command
     char *flag = strtok(NULL, delims);
-    if(flag == NULL)
+    if (flag == NULL)
     {
         is_simulation_paused = SDL_FALSE;
     }
-    else if(strcasecmp(flag, "--help") == 0)
+    else if (strcasecmp(flag, "--help") == 0)
     {
         printf("Usage: resume [OPTION]\n");
-        printf("Resume the simulation if paused, otherwise do nothing\n");
+        printf("Resume the simulation if paused, otherwise do nothing.\n");
         printf("\n");
         printf("\t--help\tdisplay this help and exit\n");
     }
     else
     {
-        printf("Invalid Flag: %s\n", flag);
+        printf("resume: invalid option -- \'%s\'\n", flag);
+        printf("Try 'resume --help' for more information.\n");
     }
 }
 
