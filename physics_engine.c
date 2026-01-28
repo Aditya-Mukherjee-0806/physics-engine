@@ -6,18 +6,19 @@
 
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 720
-#define FRAMES_PER_SEC 30
-#define DEFAULT_ARR_CAPACITY 8
-#define PIXELS_PER_METER 1500
-#define MIN_RADIUS 15
-#define MAX_RADIUS 30
-#define DENSITY 500
+#define FRAMES_PER_SEC 60
+#define DEFAULT_ARR_CAPACITY 64
+#define PIXELS_PER_METER 1024
+#define MIN_RADIUS 8
+#define MAX_RADIUS 16
+#define DENSITY 512
 #define LOG_FILE "log.txt"
 #define LOG_INTERVAL_SECS 1
-#define INPUT_BUFFER_SIZE 128
+#define INPUT_BUFFER_SIZE 256
 #define PERFECTLY_ELASTIC 1
 #define INELASTIC 0
 #define DEFAULT_ELASTICITY INELASTIC
+#define DELIM " \t\r\n"
 
 #define RGB_RED 255, 0, 0
 #define RGB_GREEN 0, 255, 0
@@ -76,6 +77,9 @@ void handleSetCommand(char *input);
 void handlePauseCommand(char *input);
 void handleResumeCommand(char *input);
 CIRCLE_OBJ *findCircleById(int id);
+SDL_bool tryParseIntOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, int *p_arg_value);
+SDL_bool tryParseFloatOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, double *p_arg_value);
+SDL_bool tryParseCharOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, char *p_arg_value);
 
 int main()
 {
@@ -98,7 +102,7 @@ int main()
     const int num_colors = sizeof(colors) / sizeof(colors[0]);
 
     shared_data_mutex = SDL_CreateMutex();
-    SDL_Thread *input_thread = SDL_CreateThread(processUserInput, "input thread", (void *)colors);
+    SDL_CreateThread(processUserInput, "input thread", NULL);
 
     for (int i = 0; i < arr_cap; i++)
     {
@@ -149,6 +153,7 @@ int main()
                 {
                 case SDL_BUTTON_LEFT:
                     VECTOR_2D point = {event.button.x, event.button.y};
+                    SDL_LockMutex(shared_data_mutex);
                     for (int i = 0; i < arr_size; i++)
                     {
                         if (isPointInsideCircle(point, circle_object_arr[i]))
@@ -158,6 +163,7 @@ int main()
                             break;
                         }
                     }
+                    SDL_UnlockMutex(shared_data_mutex);
                     break;
                 }
                 break;
@@ -169,7 +175,7 @@ int main()
             continue;
         }
         SDL_FillRect(surface, NULL, 0);
-        runSimulation(elasticity);
+        runSimulation();
         SDL_UpdateWindowSurface(window);
         if (++frames % (LOG_INTERVAL_SECS * FRAMES_PER_SEC) == 0)
             logArrInfo();
@@ -208,14 +214,14 @@ SDL_bool isPointInsideCircle(VECTOR_2D point, CIRCLE_OBJ circle_obj)
 void logArrInfo()
 {
     static int log_count = 1;
-    // printf("Log Entry: #%d\n", log_count);
     fprintf(log_file, "ENTRY: #%d\n", log_count);
+    SDL_LockMutex(shared_data_mutex);
     for (int i = 0; i < arr_size; i++)
     {
-        // printf("Circle %d:\n", circles[i].id);
         fprintf(log_file, "Circle %d:\n", circle_object_arr[i].id);
         logInfoOf(circle_object_arr[i]);
     }
+    SDL_UnlockMutex(shared_data_mutex);
     log_count++;
 }
 
@@ -226,7 +232,6 @@ void logInfoOf(CIRCLE_OBJ circle_obj)
         fprintf(log_file, "is Null.\n");
         return;
     }
-
     fprintf(log_file, "Radius = %lf\n", circle_obj.radius);
     fprintf(log_file, "Mass = %lf\n", circle_obj.phys_comp.mass);
     fprintf(log_file, "Position = (%lf, %lf)\n", circle_obj.phys_comp.pos.x, circle_obj.phys_comp.pos.y);
@@ -326,18 +331,15 @@ void simulateGravitationalForce()
                 continue;
             double m1 = circle_object_arr[i].phys_comp.mass;
             double m2 = circle_object_arr[j].phys_comp.mass;
-            VECTOR_2D u1 = circle_object_arr[i].phys_comp.vel;
-            VECTOR_2D u2 = circle_object_arr[j].phys_comp.vel;
             VECTOR_2D pos1 = circle_object_arr[i].phys_comp.pos;
             VECTOR_2D pos2 = circle_object_arr[j].phys_comp.pos;
             double dist = SDL_sqrt(SDL_pow(pos1.x - pos2.x, 2) + SDL_pow(pos1.y - pos2.y, 2));
             if (dist < circle_object_arr[i].radius + circle_object_arr[j].radius)
             {
                 handleCollision(circle_object_arr + i, circle_object_arr + j);
-
-                if (elasticity == 0)
-                    // stop calculating with circles[i] in current frame in case of merge
-                    break;
+                if (elasticity == INELASTIC)
+                    // stop calculating with dead circles[j] in case of merge
+                    continue;
             }
             double force_magnitude = G * m1 * m2 / SDL_pow(dist, 3);
             VECTOR_2D force;
@@ -430,7 +432,6 @@ void FillCircle(CIRCLE_OBJ circle_obj)
 
 int SDLCALL processUserInput(void *data)
 {
-    const Uint32 *colors = (Uint32 *)(data);
     printf("Supported Commands: create, clear, set, pause, resume\n");
     while (SDL_TRUE)
     {
@@ -450,59 +451,82 @@ int SDLCALL processUserInput(void *data)
         else if (strcasecmp(command, "resume") == 0)
             handleResumeCommand(input);
         else
-            printf("command not supported: \'%s\'\n", command);
-        // char *command = strtok(input, " ");
-        // if (strcasecmp(command, "create") != 0)
-        // {
-        //     printf("Usage: create <color> <radius> <mass> <posx> <posy> <velx> <vely>\n");
-        //     continue;
-        // }
-
-        // char *color_tok = strtok(NULL, " ");
-        // int color_index = -1;
-        // switch (*color_tok)
-        // {
-        // case 'r':
-        //     color_index = 0;
-        //     break;
-        // case 'g':
-        //     color_index = 1;
-        //     break;
-        // case 'b':
-        //     color_index = 2;
-        //     break;
-        // case 'y':
-        //     color_index = 3;
-        //     break;
-        // case 'c':
-        //     color_index = 4;
-        //     break;
-        // case 'm':
-        //     color_index = 5;
-        //     break;
-        // }
-
-        // double radius = atof(strtok(NULL, " "));
-        // double mass = atof(strtok(NULL, " "));
-        // VECTOR_2D pos = {atof(strtok(NULL, " ")), atof(strtok(NULL, " "))};
-        // VECTOR_2D vel = {atof(strtok(NULL, " ")), atof(strtok(NULL, " "))};
-
-        // createNewCircleObj(colors[color_index], radius, mass, pos, vel);
+            printf("command not supported: '%s'\n", command);
     }
 }
 
 void handleCreateCommand(char *input)
 {
-    char *delims = " \t\r\n";
-    strtok(input, delims); // skip the command
+    char *command = strtok(input, DELIM);
+    char *flag;
+    char color_char = 'r';
+    Uint32 color = SDL_MapRGB(surface->format, RGB_RED);
+    double radius = MIN_RADIUS, mass = π * radius * radius * DENSITY;
+    VECTOR_2D pos = {WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2}, vel = {0, 0};
+    while ((flag = strtok(NULL, DELIM)) != NULL)
+    {
+        if (strcasecmp(flag, "--help"))
+        {
+            printf("Usage: create [OPTION]...\n");
+            printf("Create a new object in the simulation\n");
+            printf("\n");
+            printf("Mandatory arguments to long options are mandatory for short options too.\n");
+            printf("-c, --color LETTER\tchoose between primary and secondary colors by their first letter (default: %c)\n", color_char);
+            printf("-r, --radius NUM\tset the radius of the circle object (default: %lf)\n", radius);
+            printf("-m, --mass NUM\tset the mass of the circle object (default: %lf)\n", mass);
+            printf("\t--posx NUM\tset the x coordinate of the center of the circle object (default: %lf)\n", pos.x);
+            printf("\t--posy NUM\tset the y coordinate of the center of the circle object (default: %lf)\n", pos.y);
+            printf("\t--velx NUM\tset the velocity of the circle object in the x-axis (default: %lf)\n", vel.x);
+            printf("\t--vely NUM\tset the velocity of the circle object in the y-axis (default: %lf)\n", vel.y);
+            printf("\t--help\tdisplay this help and exit\n");
+        }
+        else if (tryParseCharOptionArg(command, flag, "-c", "--color", &color_char))
+        {
+            switch (color_char)
+            {
+            case 'r':
+                break;
+            case 'g':
+                color = SDL_MapRGB(surface->format, RGB_GREEN);
+                break;
+            case 'b':
+                color = SDL_MapRGB(surface->format, RGB_BLUE);
+                break;
+            case 'y':
+                color = SDL_MapRGB(surface->format, RGB_YELLOW);
+                break;
+            case 'c':
+                color = SDL_MapRGB(surface->format, RGB_CYAN);
+                break;
+            case 'm':
+                color = SDL_MapRGB(surface->format, RGB_MAGENTA);
+                break;
+            default:
+                printf("create: color '%c' is invalid, defaulting to red\n", color_char);
+                printf("try 'create --help' for more information\n");
+            }
+        }
+        else if (tryParseFloatOptionArg(command, flag, "-r", "--radius", &radius))
+            ;
+        else if (tryParseFloatOptionArg(command, flag, "-m", "--mass", &mass))
+            ;
+        else if (tryParseFloatOptionArg(command, flag, NULL, "--posx", &pos.x))
+            ;
+        else if (tryParseFloatOptionArg(command, flag, NULL, "--posy", &pos.y))
+            ;
+        else if (tryParseFloatOptionArg(command, flag, NULL, "--velx", &vel.x))
+            ;
+        else if (tryParseFloatOptionArg(command, flag, NULL, "--vely", &vel.y))
+            ;
+    }
+    createNewCircleObj(color, radius, mass, pos, vel);
 }
 
 void handleClearCommand(char *input)
 {
     SDL_LockMutex(shared_data_mutex);
-    char *delims = " \t\r\n";
-    strtok(input, delims); // skip the command
-    char *flag = strtok(NULL, delims);
+    strtok(input, DELIM); // skip the command
+    char *flag = strtok(NULL, DELIM);
     int id;
     if (flag == NULL || strcasecmp(flag, "--all") == 0 || strcasecmp(flag, "-a") == 0)
     {
@@ -520,17 +544,17 @@ void handleClearCommand(char *input)
     }
     else if (strcasecmp(flag, "--id") == 0)
     {
-        char *id_str = strtok(NULL, delims);
+        char *id_str = strtok(NULL, DELIM);
         if (id_str == NULL)
         {
-            printf("clear: option requires an argument -- \'%s\'\n", flag);
+            printf("clear: option requires an argument -- '%s'\n", flag);
             printf("Try 'clear --help' for more information.\n");
         }
         else
         {
             if (sscanf(id_str, "%d", &id) != 1)
             {
-                printf("clear: invalid value for %s: expected integer, got \'%s\'\n", flag, id_str);
+                printf("clear: invalid value for %s: expected integer, got '%s'\n", flag, id_str);
                 printf("Try 'clear --help' for more information.\n");
             }
             else
@@ -545,16 +569,16 @@ void handleClearCommand(char *input)
     }
     else if (strcasecmp(flag, "--help") == 0)
     {
-        printf("Usage: clear [OPTION]\n");
-        printf("Clears all objects or optionally, a single one specified by its id.\n");
-        printf("\n");
-        printf("-a, --all\tclears all objects; same as \'clear\'");
-        printf("\t--id[=]NUM\tclear only the object with id=NUM, if it exists\n");
-        printf("\t--help\t\tdisplay this help and exit\n");
+        printf("Usage: clear [OPTION]\n"
+               "Clear all objects or optionally, a single one specified by its id.\n"
+               "\n"
+               "-a, --all\tclears all objects; same as \'clear\'"
+               "\t--id[=]NUM\tclear only the object with id=NUM, if it exists\n"
+               "\t--help\t\tdisplay this help and exit\n");
     }
     else
     {
-        printf("clear: invalid option -- \'%s\'\n", flag);
+        printf("clear: invalid option -- '%s'\n", flag);
         printf("Try 'clear --help' for more information.\n");
     }
 
@@ -563,11 +587,10 @@ void handleClearCommand(char *input)
 
 void handleSetCommand(char *input)
 {
-    char *delims = " \t\r\n";
-    strtok(input, delims); // skip the command
+    strtok(input, DELIM); // skip the command
     char *flag;
     SDL_bool is_flag_provided = SDL_FALSE;
-    while ((flag = strtok(NULL, delims)) != NULL)
+    while ((flag = strtok(NULL, DELIM)) != NULL)
     {
         is_flag_provided = SDL_TRUE;
         int flag_value;
@@ -583,15 +606,15 @@ void handleSetCommand(char *input)
         }
         else if (strcasecmp(flag, "-e") == 0 || strcasecmp(flag, "--elasticity") == 0)
         {
-            char *flag_val_str = strtok(NULL, delims);
+            char *flag_val_str = strtok(NULL, DELIM);
             if (flag_val_str == NULL)
             {
-                printf("set: option requires an argument -- \'%s\'\n", flag);
+                printf("set: option requires an argument -- '%s'\n", flag);
                 printf("Try 'set --help' for more information.\n");
             }
             else if (sscanf(flag_val_str, "%d", &flag_value) != 1)
             {
-                printf("set: invalid value for %s: expected integer, got \'%s\'\n", flag, flag_val_str);
+                printf("set: invalid value for %s: expected integer, got '%s'\n", flag, flag_val_str);
                 printf("Try 'set --help' for more information.\n");
             }
             else
@@ -607,68 +630,66 @@ void handleSetCommand(char *input)
         }
         else if (strcasecmp(flag, "--help") == 0)
         {
-            printf("Usage: set OPTION...\n");
-            printf("Set the value of any supported mathematical variable in the engine.\n");
-            printf("\n");
-            printf("Mandatory arguments to long options are mandatory for short options too.\n");
-            printf("-e, --elasticity[=]{0|1}\tset collisions to be inelastic (0), or perfectly elastic (1)\n");
-            printf("\t--help\tdisplay this help and exit\n");
+            printf("Usage: set OPTION...\n"
+                   "Set the value of any supported mathematical variable in the engine.\n"
+                   "\n"
+                   "Mandatory arguments to long options are mandatory for short options too.\n"
+                   "-e, --elasticity[=]{0|1}\tset collisions to be inelastic (0), or perfectly elastic (1)\n"
+                   "\t--help\tdisplay this help and exit\n");
         }
         else
         {
-            printf("set: invalid option -- \'%s\'\n", flag);
+            printf("set: invalid option -- '%s'\n", flag);
             printf("Try 'set --help' for more information.\n");
         }
     }
     if (!is_flag_provided)
     {
-        printf("Usage: set OPTION...\n");
-        printf("Try 'set --help' for more information.\n");
+        printf("Usage: set OPTION...\n"
+               "Try 'set --help' for more information.\n");
     }
 }
 
 void handlePauseCommand(char *input)
 {
-    char *delims = " \t\r\n";
-    strtok(input, delims); // skip the command
-    char *flag = strtok(NULL, delims);
+    strtok(input, DELIM); // skip the command
+    char *flag = strtok(NULL, DELIM);
     if (flag == NULL)
     {
         is_simulation_paused = SDL_TRUE;
     }
     else if (strcasecmp(flag, "--help") == 0)
     {
-        printf("Usage: pause [OPTION]\n");
-        printf("Pause the simulation if not already paused, otherwise do nothing.\n");
-        printf("\n");
-        printf("\t--help\tdisplay this help and exit\n");
+        printf("Usage: pause [OPTION]\n"
+               "Pause the simulation if not already paused, otherwise do nothing.\n"
+               "\n"
+               "\t--help\tdisplay this help and exit\n");
     }
     else
     {
-        printf("pause: invalid option -- \'%s\'\n", flag);
+        printf("pause: invalid option -- '%s'\n", flag);
         printf("Try 'pause --help' for more information.\n");
     }
 }
 
 void handleResumeCommand(char *input)
 {
-    char *delims = " \t\r\n";
-    strtok(input, delims); // skip the command
-    char *flag = strtok(NULL, delims);
+    strtok(input, DELIM); // skip the command
+    char *flag = strtok(NULL, DELIM);
     if (flag == NULL)
     {
         is_simulation_paused = SDL_FALSE;
     }
     else if (strcasecmp(flag, "--help") == 0)
     {
-        printf("Usage: resume [OPTION]\n");
-        printf("Resume the simulation if paused, otherwise do nothing.\n");
-        printf("\n");
-        printf("\t--help\tdisplay this help and exit\n");
+        printf("Usage: resume [OPTION]\n"
+               "Resume the simulation if paused, otherwise do nothing.\n"
+               "\n"
+               "\t--help\tdisplay this help and exit\n");
     }
     else
     {
-        printf("resume: invalid option -- \'%s\'\n", flag);
+        printf("resume: invalid option -- '%s'\n", flag);
         printf("Try 'resume --help' for more information.\n");
     }
 }
@@ -681,4 +702,82 @@ CIRCLE_OBJ *findCircleById(int id)
             return circle_object_arr + i;
     }
     return NULL;
+}
+
+SDL_bool tryParseIntOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, int *p_arg_value)
+{
+    if (short_option == NULL)
+        short_option = long_option;
+    SDL_bool parse_success = SDL_FALSE;
+    if (strcasecmp(input_flag, short_option) == 0 || strcasecmp(input_flag, long_option) == 0)
+    {
+        char *arg_str = strtok(NULL, DELIM);
+        if (arg_str == NULL)
+        {
+            printf("%s: option requires an argument -- '%s'\n", command_name, input_flag);
+            printf("Try '%s --help' for more information.\n", command_name);
+        }
+        else if (sscanf(arg_str, "%d", p_arg_value) != 1)
+        {
+            printf("%s: invalid value for %s: expected integer, got '%s'\n", command_name, input_flag, arg_str);
+            printf("Try '%s --help' for more information.\n", command_name);
+        }
+        else
+        {
+            parse_success = SDL_TRUE;
+        }
+    }
+    return parse_success;
+}
+
+SDL_bool tryParseFloatOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, double *p_arg_value)
+{
+    if (short_option == NULL)
+        short_option = long_option;
+    SDL_bool parse_success = SDL_FALSE;
+    if (strcasecmp(input_flag, short_option) == 0 || strcasecmp(input_flag, long_option) == 0)
+    {
+        char *arg_str = strtok(NULL, DELIM);
+        if (arg_str == NULL)
+        {
+            printf("%s: option requires an argument -- '%s'\n", command_name, input_flag);
+            printf("Try '%s --help' for more information.\n", command_name);
+        }
+        else if (sscanf(arg_str, "%lf", p_arg_value) != 1)
+        {
+            printf("%s: invalid value for %s: expected float, got '%s'\n", command_name, input_flag, arg_str);
+            printf("Try '%s --help' for more information.\n", command_name);
+        }
+        else
+        {
+            parse_success = SDL_TRUE;
+        }
+    }
+    return parse_success;
+}
+
+SDL_bool tryParseCharOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, char *p_arg_value)
+{
+    if (short_option == NULL)
+        short_option = long_option;
+    SDL_bool parse_success = SDL_FALSE;
+    if (strcasecmp(input_flag, short_option) == 0 || strcasecmp(input_flag, long_option) == 0)
+    {
+        char *arg_str = strtok(NULL, DELIM);
+        if (arg_str == NULL)
+        {
+            printf("%s: option requires an argument -- '%s'\n", command_name, input_flag);
+            printf("Try '%s --help' for more information.\n", command_name);
+        }
+        else if (sscanf(arg_str, "%c", p_arg_value) != 1)
+        {
+            printf("%s: invalid value for %s: expected character, got '%s'\n", command_name, input_flag, arg_str);
+            printf("Try '%s --help' for more information.\n", command_name);
+        }
+        else
+        {
+            parse_success = SDL_TRUE;
+        }
+    }
+    return parse_success;
 }
