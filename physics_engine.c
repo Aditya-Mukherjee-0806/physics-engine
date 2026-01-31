@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
+#include "colors.h"
 
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 720
@@ -20,13 +21,6 @@
 #define DEFAULT_ELASTICITY INELASTIC
 #define DELIM " \t\r\n"
 
-#define RGB_RED 255, 0, 0
-#define RGB_GREEN 0, 255, 0
-#define RGB_BLUE 0, 0, 255
-#define RGB_YELLOW 255, 255, 0
-#define RGB_CYAN 0, 255, 255
-#define RGB_MAGENTA 255, 0, 255
-
 typedef struct
 {
     double x, y;
@@ -42,7 +36,7 @@ typedef struct
 {
     SDL_bool alive;
     Uint16 id;
-    Uint32 color;
+    RGB24 color;
     double radius;
     PHYS_BODY phys_comp;
 } CIRCLE_OBJ;
@@ -52,7 +46,7 @@ const double G = 6.6743E-11 * PIXELS_PER_METER * PIXELS_PER_METER * PIXELS_PER_M
 const double dt = 1.0 / FRAMES_PER_SEC;
 
 FILE *log_file;
-SDL_Surface *surface;
+SDL_Renderer *renderer;
 CIRCLE_OBJ *circle_object_arr;
 int arr_cap = DEFAULT_ARR_CAPACITY, arr_size = 0;
 SDL_mutex *shared_data_mutex;
@@ -62,14 +56,14 @@ Uint8 elasticity = DEFAULT_ELASTICITY;
 SDL_bool isPointInsideCircle(VECTOR_2D point, CIRCLE_OBJ circle_obj);
 void logArrInfo();
 void logInfoOf(CIRCLE_OBJ circle_obj);
-void createNewCircleObj(Uint32 color, double radius, double mass, VECTOR_2D pos, VECTOR_2D vel);
+void createNewCircleObj(RGB24 color, double radius, double mass, VECTOR_2D pos, VECTOR_2D vel);
 void runSimulation();
 void sanitiseObjectArray();
 void simulateForces();
 void simulateGravitationalForce();
 void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2);
 void updatePositions();
-void FillCircle(CIRCLE_OBJ circle_obj);
+void RenderFillCircle(CIRCLE_OBJ *circle_obj);
 int processUserInput(void *data);
 void handleCreateCommand(char *input);
 void handleClearCommand(char *input);
@@ -84,36 +78,23 @@ SDL_bool tryParseCharOptionArg(char *command_name, char *input_flag, char *short
 int main()
 {
     srand(time(NULL));
-    log_file = fopen(LOG_FILE, "w");
     SDL_Init(SDL_INIT_EVERYTHING);
     SDL_Window *window = SDL_CreateWindow("Physics Engine", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WINDOW_WIDTH, WINDOW_HEIGHT, 0);
-    surface = SDL_GetWindowSurface(window);
-
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     circle_object_arr = (CIRCLE_OBJ *)calloc(arr_cap, sizeof(CIRCLE_OBJ));
-
-    const Uint32 colors[] = {
-        SDL_MapRGB(surface->format, RGB_RED),
-        SDL_MapRGB(surface->format, RGB_GREEN),
-        SDL_MapRGB(surface->format, RGB_BLUE),
-        SDL_MapRGB(surface->format, RGB_YELLOW),
-        SDL_MapRGB(surface->format, RGB_CYAN),
-        SDL_MapRGB(surface->format, RGB_MAGENTA),
-    };
-    const int num_colors = sizeof(colors) / sizeof(colors[0]);
-
     shared_data_mutex = SDL_CreateMutex();
     SDL_CreateThread(processUserInput, "input thread", NULL);
+    log_file = fopen(LOG_FILE, "w");
 
     for (int i = 0; i < arr_cap; i++)
     {
-        int radius = rand() % (MAX_RADIUS - MIN_RADIUS) + MIN_RADIUS;
-        Uint32 color = colors[i % num_colors];
+        int radius = MIN_RADIUS + rand() % (MAX_RADIUS - MIN_RADIUS);
         VECTOR_2D pos = {rand() % WINDOW_WIDTH, rand() % WINDOW_HEIGHT};
         VECTOR_2D vel = {
             (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1),
             (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1),
         };
-        createNewCircleObj(color, radius, π * radius * radius * DENSITY, pos, vel);
+        createNewCircleObj(generateVividColor(), radius, π * radius * radius * DENSITY, pos, vel);
     }
 
     // // Central massive body (like the Sun)
@@ -134,7 +115,11 @@ int main()
     // VECTOR_2D vel2 = {0, -v}; // moving upwards for clockwise orbit
     // createNewCircleObj(SDL_MapRGB(surface->format, RGB_CYAN), radius2, mass2, pos2, vel2);
 
-    int frames = 0;
+    SDL_SetRenderDrawColor(renderer, RGB_BLACK.r, RGB_BLACK.g, RGB_BLACK.b, SDL_ALPHA_OPAQUE);
+    SDL_RenderClear(renderer);
+    SDL_RenderPresent(renderer);
+
+    int frames = 0, frames_over_dt = 0;
     double frame_time_sum = 0, max_frame_time = 0, min_frame_time = dt;
     SDL_bool application_running = SDL_TRUE;
     while (application_running)
@@ -174,29 +159,36 @@ int main()
             SDL_Delay(dt);
             continue;
         }
-        SDL_FillRect(surface, NULL, 0);
+        SDL_SetRenderDrawColor(renderer, RGB_BLACK.r, RGB_BLACK.g, RGB_BLACK.b, SDL_ALPHA_OPAQUE);
+        SDL_RenderClear(renderer);
         runSimulation();
-        SDL_UpdateWindowSurface(window);
+        SDL_RenderPresent(renderer);
         if (++frames % (LOG_INTERVAL_SECS * FRAMES_PER_SEC) == 0)
             logArrInfo();
         Uint64 end = SDL_GetPerformanceCounter();
         double frame_time = (double)(end - start) / SDL_GetPerformanceFrequency();
-        frame_time_sum += frame_time;
-        if (frame_time < min_frame_time)
-            min_frame_time = frame_time;
-        if (frame_time > max_frame_time)
-            max_frame_time = frame_time;
+        if(frames > 1)
+        {
+            frame_time_sum += frame_time;
+            if (frame_time < min_frame_time)
+                min_frame_time = frame_time;
+            if (frame_time > max_frame_time)
+                max_frame_time = frame_time;
+        }
         if (frame_time < dt)
             SDL_Delay((dt - frame_time) * 1000);
+        else
+            frames_over_dt++;
     }
 
-    printf("Number of frames: %d\n", frames);
-    printf("Time passed: %lf\n", (double)frames / FRAMES_PER_SEC);
-    printf("Avg. Frame Time: %lf\n", frame_time_sum / frames);
-    printf("Min. Frame Time: %lf\n", min_frame_time);
-    printf("Max. Frame Time: %lf\n", max_frame_time);
+    printf("Time passed:\t\t%.2lf s\n", (double)frames / FRAMES_PER_SEC);
+    printf("Number of frames:\t%d\n", frames);
+    printf("Frames over dt:\t\t%d\n", frames_over_dt);
+    printf("Avg. Frame Time:\t%.2lf ms\n", frame_time_sum / frames * 1000);
+    printf("Min. Frame Time:\t%.2lf ms\n", min_frame_time * 1000);
+    printf("Max. Frame Time:\t%.2lf ms\n", max_frame_time * 1000);
 
-    SDL_FreeSurface(surface);
+    SDL_DestroyRenderer(renderer);
     SDL_DestroyMutex(shared_data_mutex);
     SDL_DestroyWindow(window);
     SDL_Quit();
@@ -238,7 +230,7 @@ void logInfoOf(CIRCLE_OBJ circle_obj)
     fprintf(log_file, "Velocity = (%lf, %lf)\n", circle_obj.phys_comp.vel.x, circle_obj.phys_comp.vel.y);
 }
 
-void createNewCircleObj(Uint32 color, double radius, double mass, VECTOR_2D pos, VECTOR_2D vel)
+void createNewCircleObj(RGB24 color, double radius, double mass, VECTOR_2D pos, VECTOR_2D vel)
 {
     static int id = 1;
 
@@ -265,7 +257,6 @@ void createNewCircleObj(Uint32 color, double radius, double mass, VECTOR_2D pos,
         {
             arr_cap *= 2;
             circle_object_arr = temp;
-            // memset(circle_object_arr + arr_size, 0, (arr_cap - arr_size) * sizeof(CIRCLE_OBJ));
         }
         else
             fprintf(stderr, "REALLOCATION FAILED in %s\n", __func__);
@@ -283,7 +274,7 @@ void runSimulation()
     simulateForces(elasticity);
     updatePositions();
     for (int i = 0; i < arr_size; i++)
-        FillCircle(circle_object_arr[i]);
+        RenderFillCircle(circle_object_arr + i);
 
     SDL_UnlockMutex(shared_data_mutex);
 }
@@ -307,7 +298,6 @@ void sanitiseObjectArray()
         {
             arr_cap /= 2;
             circle_object_arr = temp;
-            // memset(circle_object_arr + arr_size, 0, (arr_cap - arr_size) * sizeof(CIRCLE_OBJ));
         }
         else
             fprintf(stderr, "REALLOCATION FAILED in %s\n", __func__);
@@ -407,11 +397,12 @@ void updatePositions()
     }
 }
 
-void FillCircle(CIRCLE_OBJ circle_obj)
+void RenderFillCircle(CIRCLE_OBJ *circle_obj)
 {
-    int x = circle_obj.phys_comp.pos.x;
-    int y = circle_obj.phys_comp.pos.y;
-    int r = circle_obj.radius;
+    int x = circle_obj->phys_comp.pos.x;
+    int y = circle_obj->phys_comp.pos.y;
+    int r = circle_obj->radius;
+    SDL_SetRenderDrawColor(renderer, circle_obj->color.r, circle_obj->color.g, circle_obj->color.b, SDL_ALPHA_OPAQUE);
     for (int i = x - r; i < x + r; i++)
     {
         if (i < 0 || i >= WINDOW_WIDTH - 1)
@@ -422,10 +413,7 @@ void FillCircle(CIRCLE_OBJ circle_obj)
                 continue;
             double dist_sqr = SDL_pow(i - x, 2) + SDL_pow(j - y, 2);
             if (dist_sqr <= r * r)
-            {
-                SDL_Rect pixel = {i, j, 1, 1};
-                SDL_FillRect(surface, &pixel, circle_obj.color);
-            }
+                SDL_RenderDrawPoint(renderer, i, j);
         }
     }
 }
@@ -459,25 +447,25 @@ void handleCreateCommand(char *input)
 {
     char *command = strtok(input, DELIM);
     char *flag;
-    char color_char = 'r';
-    Uint32 color = SDL_MapRGB(surface->format, RGB_RED);
+    char color_char = 'w';
+    RGB24 color = RGB_WHITE;
     double radius = MIN_RADIUS, mass = π * radius * radius * DENSITY;
     VECTOR_2D pos = {WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2}, vel = {0, 0};
     while ((flag = strtok(NULL, DELIM)) != NULL)
     {
-        if (strcasecmp(flag, "--help"))
+        if (strcasecmp(flag, "--help") == 0)
         {
             printf("Usage: create [OPTION]...\n");
             printf("Create a new object in the simulation\n");
             printf("\n");
             printf("Mandatory arguments to long options are mandatory for short options too.\n");
             printf("-c, --color LETTER\tchoose between primary and secondary colors by their first letter (default: %c)\n", color_char);
-            printf("-r, --radius NUM\tset the radius of the circle object (default: %lf)\n", radius);
-            printf("-m, --mass NUM\tset the mass of the circle object (default: %lf)\n", mass);
-            printf("\t--posx NUM\tset the x coordinate of the center of the circle object (default: %lf)\n", pos.x);
-            printf("\t--posy NUM\tset the y coordinate of the center of the circle object (default: %lf)\n", pos.y);
-            printf("\t--velx NUM\tset the velocity of the circle object in the x-axis (default: %lf)\n", vel.x);
-            printf("\t--vely NUM\tset the velocity of the circle object in the y-axis (default: %lf)\n", vel.y);
+            printf("-r, --radius NUM\tset the radius of the circle object (default: %d)\n", (int)radius);
+            printf("-m, --mass NUM\tset the mass of the circle object (default: %d)\n", (int)mass);
+            printf("\t--posx NUM\tset the x coordinate of the center of the circle object (default: %d)\n", (int)pos.x);
+            printf("\t--posy NUM\tset the y coordinate of the center of the circle object (default: %d)\n", (int)pos.y);
+            printf("\t--velx NUM\tset the velocity of the circle object in the x-axis (default: %d)\n", (int)vel.x);
+            printf("\t--vely NUM\tset the velocity of the circle object in the y-axis (default: %d)\n", (int)vel.y);
             printf("\t--help\tdisplay this help and exit\n");
         }
         else if (tryParseCharOptionArg(command, flag, "-c", "--color", &color_char))
@@ -485,24 +473,27 @@ void handleCreateCommand(char *input)
             switch (color_char)
             {
             case 'r':
+                color = RGB_RED;
                 break;
             case 'g':
-                color = SDL_MapRGB(surface->format, RGB_GREEN);
+                color = RGB_GREEN;
                 break;
             case 'b':
-                color = SDL_MapRGB(surface->format, RGB_BLUE);
+                color = RGB_BLUE;
                 break;
             case 'y':
-                color = SDL_MapRGB(surface->format, RGB_YELLOW);
+                color = RGB_YELLOW;
                 break;
             case 'c':
-                color = SDL_MapRGB(surface->format, RGB_CYAN);
+                color = RGB_CYAN;
                 break;
             case 'm':
-                color = SDL_MapRGB(surface->format, RGB_MAGENTA);
+                color = RGB_MAGENTA;
+                break;
+            case 'w':
                 break;
             default:
-                printf("create: color '%c' is invalid, defaulting to red\n", color_char);
+                printf("create: color '%c' is invalid, defaulting to white\n", color_char);
                 printf("try 'create --help' for more information\n");
             }
         }
