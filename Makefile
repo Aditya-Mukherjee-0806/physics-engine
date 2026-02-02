@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -g -Wall -Wextra $(SDL_CFLAGS)
 CPPFLAGS = -Iinclude
-LIBS = $(SDL_LIBS)
+LIBS = $(SDL_LIBS) -lm
 SDL_CFLAGS = `sdl2-config --cflags`
 SDL_LIBS = `sdl2-config --libs`
 SRC_DIR = src

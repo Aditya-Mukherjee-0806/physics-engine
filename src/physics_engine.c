@@ -4,10 +4,11 @@
 #include <time.h>
 #include <string.h>
 #include "colors.h"
+#include "vector2d.h"
 
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 720
-#define FRAMES_PER_SEC 60
+#define FRAMES_PER_SEC 30
 #define DEFAULT_ARR_CAPACITY 128
 #define PIXELS_PER_METER 1024
 #define MIN_RADIUS 8
@@ -31,11 +32,6 @@ enum MODES
     WALLED = 8,
     LOG = 16,
 };
-
-typedef struct
-{
-    double x, y;
-} VECTOR_2D;
 
 typedef struct
 {
@@ -95,10 +91,16 @@ SDL_bool tryParseStrOptionArg(char *command_name, char *input_flag, char *short_
 int main()
 {
     Uint64 engine_start = SDL_GetPerformanceCounter();
-    setMode(ELASTIC | WALLED | MOVE | LOG);
+    setMode(GRAVITY);
     srand(time(NULL));
     SDL_Init(SDL_INIT_EVERYTHING);
-    SDL_Window *window = SDL_CreateWindow("Physics Engine", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WINDOW_WIDTH, WINDOW_HEIGHT, 0);
+    SDL_Window *window = SDL_CreateWindow(
+        "Physics Engine",
+        SDL_WINDOWPOS_CENTERED,
+        SDL_WINDOWPOS_CENTERED,
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+        0);
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     circle_object_arr = (CIRCLE_OBJ *)calloc(arr_cap, sizeof(CIRCLE_OBJ));
     shared_data_mutex = SDL_CreateMutex();
@@ -106,37 +108,37 @@ int main()
     if (logging_enabled)
         log_file = fopen(LOG_FILE, "w");
 
-    for (int i = 0; i < arr_cap; i++)
-    {
-        int radius = MIN_RADIUS + rand() % (MAX_RADIUS - MIN_RADIUS);
-        VECTOR_2D pos = {
-            .x = rand() % WINDOW_WIDTH,
-            .y = rand() % WINDOW_HEIGHT,
-        };
-        VECTOR_2D vel = {
-            .x = (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1) * DEFAULT_SPEED * spawn_moving,
-            .y = (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1) * DEFAULT_SPEED * spawn_moving,
-        };
-        createNewCircleObj(generateVividColor(), radius, π * radius * radius * DENSITY, pos, vel);
-    }
+    // for (int i = 0; i < arr_cap; i++)
+    // {
+    //     int radius = MIN_RADIUS + rand() % (MAX_RADIUS - MIN_RADIUS);
+    //     VECTOR_2D pos = {
+    //         .x = rand() % WINDOW_WIDTH,
+    //         .y = rand() % WINDOW_HEIGHT,
+    //     };
+    //     VECTOR_2D vel = {
+    //         .x = (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1) * DEFAULT_SPEED * spawn_moving,
+    //         .y = (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1) * DEFAULT_SPEED * spawn_moving,
+    //     };
+    //     createNewCircleObj(generateVividColor(), radius, π * radius * radius * DENSITY, pos, vel);
+    // }
 
-    // // Central massive body (like the Sun)
-    // VECTOR_2D pos1 = {WINDOW_WIDTH / 2.0, WINDOW_HEIGHT / 2.0};
-    // VECTOR_2D vel1 = {0, 0};
-    // double radius1 = 40;
-    // double mass1 = 100000000;
-    // createNewCircleObj(SDL_MapRGB(surface->format, RGB_YELLOW), radius1, mass1, pos1, vel1);
+    // Central massive body (like the Sun)
+    VECTOR_2D pos1 = {WINDOW_WIDTH / 2.0, WINDOW_HEIGHT / 2.0};
+    VECTOR_2D vel1 = {0, 0};
+    double radius1 = 40;
+    double mass1 = 100000000;
+    createNewCircleObj(RGB_YELLOW, radius1, mass1, pos1, vel1);
 
-    // // Smaller orbiting body (like a planet)
-    // double distance = 300; // distance from center
-    // VECTOR_2D pos2 = {pos1.x + distance, pos1.y};
-    // double radius2 = 20; // smaller radius
-    // double mass2 = 100000;
+    // Smaller orbiting body (like a planet)
+    double distance = 250; // distance from center
+    VECTOR_2D pos2 = {pos1.x + distance, pos1.y};
+    double radius2 = 20; // smaller radius
+    double mass2 = 1000;
 
-    // // Circular orbit velocity perpendicular to radius
-    // double v = SDL_sqrt(G * mass1 / distance);
-    // VECTOR_2D vel2 = {0, -v}; // moving upwards for clockwise orbit
-    // createNewCircleObj(SDL_MapRGB(surface->format, RGB_CYAN), radius2, mass2, pos2, vel2);
+    // Circular orbit velocity perpendicular to radius
+    double v = SDL_sqrt(G * mass1 / distance);
+    VECTOR_2D vel2 = {0, -v}; // moving upwards for clockwise orbit
+    createNewCircleObj(RGB_CYAN, radius2, mass2, pos2, vel2);
 
     int frames = 0, frames_over_dt = 0;
     double frame_time_sum = 0, max_frame_time = 0, min_frame_time = dt;
@@ -175,7 +177,7 @@ int main()
         }
         if (is_simulation_paused)
         {
-            SDL_Delay(dt);
+            SDL_Delay(dt * 1000);
             continue;
         }
         SDL_SetRenderDrawColor(renderer, RGB_BLACK.r, RGB_BLACK.g, RGB_BLACK.b, SDL_ALPHA_OPAQUE);
@@ -225,19 +227,17 @@ int main()
 
 void setMode(int mode)
 {
-    is_collision_elastic = mode >> (int)log2(ELASTIC) & 1;
-    gravity_enabled = mode >> (int)log2(GRAVITY) & 1;
-    spawn_moving = mode >> (int)log2(MOVE) & 1;
-    walls_enabled = mode >> (int)log2(WALLED) & 1;
-    logging_enabled = mode >> (int)log2(LOG) & 1;
+    is_collision_elastic = (mode & ELASTIC) != 0;
+    gravity_enabled = (mode & GRAVITY) != 0;
+    spawn_moving = (mode & MOVE) != 0;
+    walls_enabled = (mode & WALLED) != 0;
+    logging_enabled = (mode & LOG) != 0;
 }
 
 SDL_bool isPointInsideCircle(VECTOR_2D point, CIRCLE_OBJ circle_obj)
 {
-    double x_dist = point.x - circle_obj.phys_comp.pos.x;
-    double y_dist = point.y - circle_obj.phys_comp.pos.y;
-    double dist_sq = x_dist * x_dist + y_dist * y_dist;
-    return dist_sq <= circle_obj.radius * circle_obj.radius;
+    VECTOR_2D dist = Vector2D_Difference(point, circle_obj.phys_comp.pos);
+    return Vector2D_Magnitude(dist) <= circle_obj.radius;
 }
 
 void logArrInfo()
@@ -258,7 +258,7 @@ void logInfoOf(CIRCLE_OBJ circle_obj)
 {
     if (!circle_obj.alive)
     {
-        fprintf(log_file, "is Null.\n");
+        fprintf(log_file, "is Dead.\n");
         return;
     }
     fprintf(log_file, "Radius = %.2lf\n", circle_obj.radius);
@@ -271,18 +271,16 @@ void createNewCircleObj(RGB24 color, double radius, double mass, VECTOR_2D pos, 
 {
     static int id = 1;
 
-    PHYS_BODY phys_comp = {
-        .mass = mass,
-        .pos = pos,
-        .vel = vel,
-    };
-
     CIRCLE_OBJ circle_obj = {
         .alive = SDL_TRUE,
         .id = id++,
         .color = color,
         .radius = radius,
-        .phys_comp = phys_comp,
+        .phys_comp = (PHYS_BODY){
+            .mass = mass,
+            .pos = pos,
+            .vel = vel,
+        },
     };
 
     SDL_LockMutex(shared_data_mutex);
@@ -363,7 +361,8 @@ void simulateGravitationalForce()
             double m2 = circle_object_arr[j].phys_comp.mass;
             VECTOR_2D pos1 = circle_object_arr[i].phys_comp.pos;
             VECTOR_2D pos2 = circle_object_arr[j].phys_comp.pos;
-            double dist = SDL_sqrt(SDL_pow(pos1.x - pos2.x, 2) + SDL_pow(pos1.y - pos2.y, 2));
+            VECTOR_2D dist_vec = Vector2D_Difference(pos2, pos1);
+            double dist = Vector2D_Magnitude(dist_vec);
             if (dist < circle_object_arr[i].radius + circle_object_arr[j].radius)
             {
                 handleCollision(circle_object_arr + i, circle_object_arr + j);
@@ -373,14 +372,18 @@ void simulateGravitationalForce()
             }
             if (gravity_enabled)
             {
-                double force_magnitude = G * m1 * m2 / SDL_pow(dist, 3);
-                VECTOR_2D force;
-                force.x = force_magnitude * (pos2.x - pos1.x);
-                force.y = force_magnitude * (pos2.y - pos1.y);
-                circle_object_arr[i].phys_comp.vel.x += force.x / m1 * dt;
-                circle_object_arr[i].phys_comp.vel.y += force.y / m1 * dt;
-                circle_object_arr[j].phys_comp.vel.x -= force.x / m2 * dt;
-                circle_object_arr[j].phys_comp.vel.y -= force.y / m2 * dt;
+                double force_magnitude = G * m1 * m2 / SDL_pow(dist, 2);
+                VECTOR_2D force = Vector2D_ScalarProduct(
+                    Vector2D_Normalised(dist_vec),
+                    force_magnitude);
+
+                circle_object_arr[i].phys_comp.vel = Vector2D_Sum(
+                    circle_object_arr[i].phys_comp.vel,
+                    Vector2D_ScalarProduct(force, dt / m1));
+
+                circle_object_arr[j].phys_comp.vel = Vector2D_Difference(
+                    circle_object_arr[j].phys_comp.vel,
+                    Vector2D_ScalarProduct(force, dt / m2));
             }
         }
     }
@@ -397,22 +400,34 @@ void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2)
     if (is_collision_elastic)
     {
         // bounce c1 and c2 off each other
-        c1->phys_comp.vel.x = ((m1 - m2) * u1.x + 2 * m2 * u2.x) / (m1 + m2);
-        c1->phys_comp.vel.y = ((m1 - m2) * u1.y + 2 * m2 * u2.y) / (m1 + m2);
+        c1->phys_comp.vel = Vector2D_ScalarProduct(
+            Vector2D_Sum(
+                Vector2D_ScalarProduct(u1, m1 - m2),
+                Vector2D_ScalarProduct(u2, m2 * 2)),
+            1 / (m1 + m2));
 
-        c2->phys_comp.vel.x = ((m2 - m1) * u2.x + 2 * m1 * u1.x) / (m1 + m2);
-        c2->phys_comp.vel.y = ((m2 - m1) * u2.y + 2 * m1 * u1.y) / (m1 + m2);
+        c2->phys_comp.vel = Vector2D_ScalarProduct(
+            Vector2D_Sum(
+                Vector2D_ScalarProduct(u2, m2 - m1),
+                Vector2D_ScalarProduct(u1, m1 * 2)),
+            1 / (m1 + m2));
     }
     else
     {
         // Merge c2 into c1
         c1->color = mixTwoColors(c1->color, c2->color);
         // Conservation of Linear Momentum
-        c1->phys_comp.vel.x = (m1 * u1.x + m2 * u2.x) / (m1 + m2);
-        c1->phys_comp.vel.y = (m1 * u1.y + m2 * u2.y) / (m1 + m2);
+        c1->phys_comp.vel = Vector2D_ScalarProduct(
+            Vector2D_Sum(
+                Vector2D_ScalarProduct(u1, m1),
+                Vector2D_ScalarProduct(u2, m2)),
+            1 / (m1 + m2));
         // Conservation of Centre of Mass
-        c1->phys_comp.pos.x = (m1 * pos1.x + m2 * pos2.x) / (m1 + m2);
-        c1->phys_comp.pos.y = (m1 * pos1.y + m2 * pos2.y) / (m1 + m2);
+        c1->phys_comp.pos = Vector2D_ScalarProduct(
+            Vector2D_Sum(
+                Vector2D_ScalarProduct(pos1, m1),
+                Vector2D_ScalarProduct(pos2, m2)),
+            1 / (m1 + m2));
         // mass of new body is the combined mass of both bodies, and radius is recalculated according to new mass
         c1->phys_comp.mass += c2->phys_comp.mass;
         c1->radius = SDL_sqrt(c1->phys_comp.mass / (π * DENSITY));
@@ -425,10 +440,9 @@ void updatePositionsAndCheckBounds()
 {
     for (int i = 0; i < arr_size; i++)
     {
-        if (circle_object_arr[i].phys_comp.vel.x)
-            circle_object_arr[i].phys_comp.pos.x += circle_object_arr[i].phys_comp.vel.x * dt;
-        if (circle_object_arr[i].phys_comp.vel.y)
-            circle_object_arr[i].phys_comp.pos.y += circle_object_arr[i].phys_comp.vel.y * dt;
+        circle_object_arr[i].phys_comp.pos = Vector2D_Sum(
+            circle_object_arr[i].phys_comp.pos,
+            Vector2D_ScalarProduct(circle_object_arr[i].phys_comp.vel, dt));
 
         if (walls_enabled)
         {
@@ -480,8 +494,8 @@ void RenderFillCircle(CIRCLE_OBJ *circle_obj)
         {
             if (j < 0 || j >= WINDOW_HEIGHT)
                 continue;
-            double dist_sqr = SDL_pow(i - x, 2) + SDL_pow(j - y, 2);
-            if (dist_sqr <= r * r)
+            double dist = Vector2D_Magnitude(Vector2D_Difference((VECTOR_2D){i, j}, (VECTOR_2D){x, y}));
+            if (dist <= r)
                 SDL_RenderDrawPoint(renderer, i, j);
         }
     }
