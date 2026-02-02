@@ -1,28 +1,29 @@
 CC = gcc
 CFLAGS = -g -Wall -Wextra $(SDL_CFLAGS)
+CPPFLAGS = -Iinclude
+LIBS = $(SDL_LIBS)
 SDL_CFLAGS = `sdl2-config --cflags`
 SDL_LIBS = `sdl2-config --libs`
-SRC = physics_engine.c colors.c
-OBJ = $(SRC:.c=.o)
+SRC_DIR = src
+OBJ_DIR = build
+SRC = $(wildcard $(SRC_DIR)/*.c)
+OBJ = $(SRC:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 TARGET = a.out
+LOG = log.txt
 
 .PHONY: all run clean
 
-# make will create/update a.out by default
 all: $(TARGET)
 
-# make run will create/update a.out if necessary then execute a.out
 run: $(TARGET)
 	./$(TARGET)
 
-# create/update a.out from obj files if they are modified
 $(TARGET): $(OBJ)
-	$(CC) $^ -o $@ $(SDL_LIBS)
+	$(CC) $^ -o $@ $(LIBS)
 
-# create .o files from .c files with the same filename
-%.o: %.c
-	$(CC) -c $(CFLAGS) $< -o $@
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
+	mkdir -p $(OBJ_DIR)
+	$(CC) -c $(CFLAGS) $(CPPFLAGS) $< -o $@
 
-# remove the .o files
 clean:
-	rm -f $(OBJ)
+	rm -rf $(OBJ_DIR) $(TARGET) $(LOG)

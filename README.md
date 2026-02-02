@@ -31,7 +31,7 @@ git clone https://github.com/Aditya-Mukherjee-0806/physics-engine
 
 - **(Recommended)** To build and run the executable, type ```make run``` in the terminal from the project directory
 - To simply build the executable without running it, type ```make```
-- To clean the object files after building, type ```make clean ```
+- To clean the object files after building, type ```make clean```
 
 <!--
 TODO:
@@ -46,7 +46,7 @@ Aditya Mukherjee - <adityamukherjee082006@gmail.com>
 
 ## Support
 
-<a href="https://www.buymeacoffee.com/ShadowDTR" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
+[![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://www.buymeacoffee.com/ShadowDTR)
 
 ## Known Issues
 

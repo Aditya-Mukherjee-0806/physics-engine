@@ -11,24 +11,11 @@ const RGB24 RGB_CYAN = {0, 255, 255};
 const RGB24 RGB_MAGENTA = {255, 0, 255};
 const RGB24 RGB_WHITE = {255, 255, 255};
 
-/**
- * @brief Get a random number between low (inclusive) and high (exclusive)
- *
- * @param low the lower limit (inclusive)
- * @param high the higher limit (exclusive)
- * @return the random number generated in the given range
- */
-int getNumInRange(int low, int high)
+int getRandNumInRange(int low, int high)
 {
     return low + rand() % (high - low);
 }
 
-/**
- * @brief shuffle an unsigned char array based on the Fisher-Yates algorithm
- *
- * @param arr the array to shuffle
- * @param n the size of the array
- */
 void UCHAR_FisherYatesShuffle(unsigned char *arr, int n)
 {
     for (int i = n - 1; i > 0; i--)
@@ -43,9 +30,9 @@ void UCHAR_FisherYatesShuffle(unsigned char *arr, int n)
 RGB24 generateVividColor()
 {
     unsigned char bands[3];
-    bands[0] = getNumInRange(0, 64);
-    bands[1] = getNumInRange(64, 128);
-    bands[2] = getNumInRange(128, 256);
+    bands[0] = getRandNumInRange(0, 64);
+    bands[1] = getRandNumInRange(64, 128);
+    bands[2] = getRandNumInRange(128, 256);
 
     UCHAR_FisherYatesShuffle(bands, 3);
 
@@ -54,4 +41,13 @@ RGB24 generateVividColor()
     color.g = bands[1];
     color.b = bands[2];
     return color;
+}
+
+RGB24 mixTwoColors(RGB24 color1, RGB24 color2)
+{
+    return (RGB24){
+        .r = (color1.r + color2.r) / 2,
+        .g = (color1.g + color2.g) / 2,
+        .b = (color1.b + color2.b) / 2,
+    };
 }

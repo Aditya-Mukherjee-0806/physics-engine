@@ -8,18 +8,29 @@
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 720
 #define FRAMES_PER_SEC 60
-#define DEFAULT_ARR_CAPACITY 64
+#define DEFAULT_ARR_CAPACITY 128
 #define PIXELS_PER_METER 1024
 #define MIN_RADIUS 8
 #define MAX_RADIUS 16
-#define DENSITY 512
+#define DENSITY 768
 #define LOG_FILE "log.txt"
 #define LOG_INTERVAL_SECS 1
 #define INPUT_BUFFER_SIZE 256
-#define PERFECTLY_ELASTIC 1
-#define INELASTIC 0
-#define DEFAULT_ELASTICITY INELASTIC
+#define BOUNCE 1
+#define MERGE 0
 #define DELIM " \t\r\n"
+#define DEFAULT_SPEED 196
+#define BUFFER_ZONE 128
+#define STARTUP_FRAMES 5
+
+enum MODES
+{
+    ELASTIC = 1,
+    GRAVITY = 2,
+    MOVE = 4,
+    WALLED = 8,
+    LOG = 16,
+};
 
 typedef struct
 {
@@ -51,8 +62,13 @@ CIRCLE_OBJ *circle_object_arr;
 int arr_cap = DEFAULT_ARR_CAPACITY, arr_size = 0;
 SDL_mutex *shared_data_mutex;
 SDL_bool is_simulation_paused = SDL_FALSE;
-Uint8 elasticity = DEFAULT_ELASTICITY;
+SDL_bool is_collision_elastic;
+SDL_bool gravity_enabled;
+SDL_bool spawn_moving;
+SDL_bool walls_enabled;
+SDL_bool logging_enabled;
 
+void setMode(int mode);
 SDL_bool isPointInsideCircle(VECTOR_2D point, CIRCLE_OBJ circle_obj);
 void logArrInfo();
 void logInfoOf(CIRCLE_OBJ circle_obj);
@@ -62,7 +78,7 @@ void sanitiseObjectArray();
 void simulateForces();
 void simulateGravitationalForce();
 void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2);
-void updatePositions();
+void updatePositionsAndCheckBounds();
 void RenderFillCircle(CIRCLE_OBJ *circle_obj);
 int processUserInput(void *data);
 void handleCreateCommand(char *input);
@@ -74,9 +90,12 @@ CIRCLE_OBJ *findCircleById(int id);
 SDL_bool tryParseIntOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, int *p_arg_value);
 SDL_bool tryParseFloatOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, double *p_arg_value);
 SDL_bool tryParseCharOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, char *p_arg_value);
+SDL_bool tryParseStrOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, char *buffer, int buf_size);
 
 int main()
 {
+    Uint64 engine_start = SDL_GetPerformanceCounter();
+    setMode(ELASTIC | WALLED | MOVE | LOG);
     srand(time(NULL));
     SDL_Init(SDL_INIT_EVERYTHING);
     SDL_Window *window = SDL_CreateWindow("Physics Engine", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WINDOW_WIDTH, WINDOW_HEIGHT, 0);
@@ -84,15 +103,19 @@ int main()
     circle_object_arr = (CIRCLE_OBJ *)calloc(arr_cap, sizeof(CIRCLE_OBJ));
     shared_data_mutex = SDL_CreateMutex();
     SDL_CreateThread(processUserInput, "input thread", NULL);
-    log_file = fopen(LOG_FILE, "w");
+    if (logging_enabled)
+        log_file = fopen(LOG_FILE, "w");
 
     for (int i = 0; i < arr_cap; i++)
     {
         int radius = MIN_RADIUS + rand() % (MAX_RADIUS - MIN_RADIUS);
-        VECTOR_2D pos = {rand() % WINDOW_WIDTH, rand() % WINDOW_HEIGHT};
+        VECTOR_2D pos = {
+            .x = rand() % WINDOW_WIDTH,
+            .y = rand() % WINDOW_HEIGHT,
+        };
         VECTOR_2D vel = {
-            (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1),
-            (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1),
+            .x = (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1) * DEFAULT_SPEED * spawn_moving,
+            .y = (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1) * DEFAULT_SPEED * spawn_moving,
         };
         createNewCircleObj(generateVividColor(), radius, π * radius * radius * DENSITY, pos, vel);
     }
@@ -115,16 +138,12 @@ int main()
     // VECTOR_2D vel2 = {0, -v}; // moving upwards for clockwise orbit
     // createNewCircleObj(SDL_MapRGB(surface->format, RGB_CYAN), radius2, mass2, pos2, vel2);
 
-    SDL_SetRenderDrawColor(renderer, RGB_BLACK.r, RGB_BLACK.g, RGB_BLACK.b, SDL_ALPHA_OPAQUE);
-    SDL_RenderClear(renderer);
-    SDL_RenderPresent(renderer);
-
     int frames = 0, frames_over_dt = 0;
     double frame_time_sum = 0, max_frame_time = 0, min_frame_time = dt;
     SDL_bool application_running = SDL_TRUE;
     while (application_running)
     {
-        Uint64 start = SDL_GetPerformanceCounter();
+        Uint64 frame_start = SDL_GetPerformanceCounter();
         SDL_Event event;
         while (SDL_PollEvent(&event))
         {
@@ -163,11 +182,12 @@ int main()
         SDL_RenderClear(renderer);
         runSimulation();
         SDL_RenderPresent(renderer);
-        if (++frames % (LOG_INTERVAL_SECS * FRAMES_PER_SEC) == 0)
+        frames++;
+        if (logging_enabled && frames % (LOG_INTERVAL_SECS * FRAMES_PER_SEC) == 0)
             logArrInfo();
-        Uint64 end = SDL_GetPerformanceCounter();
-        double frame_time = (double)(end - start) / SDL_GetPerformanceFrequency();
-        if(frames > 1)
+        Uint64 frame_end = SDL_GetPerformanceCounter();
+        double frame_time = (double)(frame_end - frame_start) / SDL_GetPerformanceFrequency();
+        if (frames > STARTUP_FRAMES)
         {
             frame_time_sum += frame_time;
             if (frame_time < min_frame_time)
@@ -178,28 +198,45 @@ int main()
         if (frame_time < dt)
             SDL_Delay((dt - frame_time) * 1000);
         else
+        {
+            printf("%d\n", frames);
             frames_over_dt++;
+        }
     }
 
-    printf("Time passed:\t\t%.2lf s\n", (double)frames / FRAMES_PER_SEC);
-    printf("Number of frames:\t%d\n", frames);
-    printf("Frames over dt:\t\t%d\n", frames_over_dt);
-    printf("Avg. Frame Time:\t%.2lf ms\n", frame_time_sum / frames * 1000);
-    printf("Min. Frame Time:\t%.2lf ms\n", min_frame_time * 1000);
-    printf("Max. Frame Time:\t%.2lf ms\n", max_frame_time * 1000);
+    Uint64 engine_end = SDL_GetPerformanceCounter();
+    printf("Time passed:\t%.2lf s\n", (double)(engine_end - engine_start) / SDL_GetPerformanceFrequency());
+    printf("No. of frames:\t%d\n", frames);
+    printf("Frames over dt:\t%d\n", frames_over_dt);
+    printf("After excluding %d frames during startup:\n", STARTUP_FRAMES);
+    printf("Avg. Frame Time: %.2lf ms\n", frame_time_sum / (frames - STARTUP_FRAMES) * 1000);
+    printf("Min. Frame Time: %.2lf ms\n", min_frame_time * 1000);
+    printf("Max. Frame Time: %.2lf ms\n", max_frame_time * 1000);
 
+    if (logging_enabled)
+        fclose(log_file);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyMutex(shared_data_mutex);
     SDL_DestroyWindow(window);
     SDL_Quit();
-    fclose(log_file);
     free(circle_object_arr);
     return 0;
 }
 
+void setMode(int mode)
+{
+    is_collision_elastic = mode >> (int)log2(ELASTIC) & 1;
+    gravity_enabled = mode >> (int)log2(GRAVITY) & 1;
+    spawn_moving = mode >> (int)log2(MOVE) & 1;
+    walls_enabled = mode >> (int)log2(WALLED) & 1;
+    logging_enabled = mode >> (int)log2(LOG) & 1;
+}
+
 SDL_bool isPointInsideCircle(VECTOR_2D point, CIRCLE_OBJ circle_obj)
 {
-    double dist_sq = SDL_pow(point.x - circle_obj.phys_comp.pos.x, 2) + SDL_pow(point.y - circle_obj.phys_comp.pos.y, 2);
+    double x_dist = point.x - circle_obj.phys_comp.pos.x;
+    double y_dist = point.y - circle_obj.phys_comp.pos.y;
+    double dist_sq = x_dist * x_dist + y_dist * y_dist;
     return dist_sq <= circle_obj.radius * circle_obj.radius;
 }
 
@@ -224,10 +261,10 @@ void logInfoOf(CIRCLE_OBJ circle_obj)
         fprintf(log_file, "is Null.\n");
         return;
     }
-    fprintf(log_file, "Radius = %lf\n", circle_obj.radius);
-    fprintf(log_file, "Mass = %lf\n", circle_obj.phys_comp.mass);
-    fprintf(log_file, "Position = (%lf, %lf)\n", circle_obj.phys_comp.pos.x, circle_obj.phys_comp.pos.y);
-    fprintf(log_file, "Velocity = (%lf, %lf)\n", circle_obj.phys_comp.vel.x, circle_obj.phys_comp.vel.y);
+    fprintf(log_file, "Radius = %.2lf\n", circle_obj.radius);
+    fprintf(log_file, "Mass = %.2lf\n", circle_obj.phys_comp.mass);
+    fprintf(log_file, "Position = (%.2lf, %.2lf)\n", circle_obj.phys_comp.pos.x, circle_obj.phys_comp.pos.y);
+    fprintf(log_file, "Velocity = (%.2lf, %.2lf)\n", circle_obj.phys_comp.vel.x, circle_obj.phys_comp.vel.y);
 }
 
 void createNewCircleObj(RGB24 color, double radius, double mass, VECTOR_2D pos, VECTOR_2D vel)
@@ -252,10 +289,10 @@ void createNewCircleObj(RGB24 color, double radius, double mass, VECTOR_2D pos, 
 
     if (arr_size >= arr_cap)
     {
-        CIRCLE_OBJ *temp = (CIRCLE_OBJ *)realloc(circle_object_arr, arr_cap * 2 * sizeof(CIRCLE_OBJ));
+        CIRCLE_OBJ *temp = (CIRCLE_OBJ *)realloc(circle_object_arr, arr_cap * 4 * sizeof(CIRCLE_OBJ));
         if (temp)
         {
-            arr_cap *= 2;
+            arr_cap *= 4;
             circle_object_arr = temp;
         }
         else
@@ -271,8 +308,8 @@ void runSimulation()
     SDL_LockMutex(shared_data_mutex);
 
     sanitiseObjectArray();
-    simulateForces(elasticity);
-    updatePositions();
+    simulateForces();
+    updatePositionsAndCheckBounds();
     for (int i = 0; i < arr_size; i++)
         RenderFillCircle(circle_object_arr + i);
 
@@ -281,17 +318,20 @@ void runSimulation()
 
 void sanitiseObjectArray()
 {
-    for (int i = 0; i < arr_size; i++)
+    int i = 0, j = arr_size;
+    while (i < j)
     {
         if (circle_object_arr[i].alive)
-            continue;
-        for (int j = i + 1; j < arr_size; j++)
-            circle_object_arr[j - 1] = circle_object_arr[j];
-        arr_size--;
-        i--;
+            i++;
+        else
+            circle_object_arr[i] = circle_object_arr[--j];
     }
+    // all elements before i are alive, and all elements from j onwards are dead
+    // when i == j, the loop ends and i points to a dead element
+    // therefore total num of alive elements is i
+    arr_size = i;
 
-    if (arr_size < arr_cap / 4)
+    if (arr_size < arr_cap / 8)
     {
         CIRCLE_OBJ *temp = (CIRCLE_OBJ *)realloc(circle_object_arr, arr_cap / 2 * sizeof(CIRCLE_OBJ));
         if (temp)
@@ -327,18 +367,21 @@ void simulateGravitationalForce()
             if (dist < circle_object_arr[i].radius + circle_object_arr[j].radius)
             {
                 handleCollision(circle_object_arr + i, circle_object_arr + j);
-                if (elasticity == INELASTIC)
+                if (is_collision_elastic)
                     // stop calculating with dead circles[j] in case of merge
                     continue;
             }
-            double force_magnitude = G * m1 * m2 / SDL_pow(dist, 3);
-            VECTOR_2D force;
-            force.x = force_magnitude * (pos2.x - pos1.x);
-            force.y = force_magnitude * (pos2.y - pos1.y);
-            circle_object_arr[i].phys_comp.vel.x += force.x / m1 * dt;
-            circle_object_arr[i].phys_comp.vel.y += force.y / m1 * dt;
-            circle_object_arr[j].phys_comp.vel.x -= force.x / m2 * dt;
-            circle_object_arr[j].phys_comp.vel.y -= force.y / m2 * dt;
+            if (gravity_enabled)
+            {
+                double force_magnitude = G * m1 * m2 / SDL_pow(dist, 3);
+                VECTOR_2D force;
+                force.x = force_magnitude * (pos2.x - pos1.x);
+                force.y = force_magnitude * (pos2.y - pos1.y);
+                circle_object_arr[i].phys_comp.vel.x += force.x / m1 * dt;
+                circle_object_arr[i].phys_comp.vel.y += force.y / m1 * dt;
+                circle_object_arr[j].phys_comp.vel.x -= force.x / m2 * dt;
+                circle_object_arr[j].phys_comp.vel.y -= force.y / m2 * dt;
+            }
         }
     }
 }
@@ -351,7 +394,7 @@ void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2)
     VECTOR_2D u2 = c2->phys_comp.vel;
     VECTOR_2D pos1 = c1->phys_comp.pos;
     VECTOR_2D pos2 = c2->phys_comp.pos;
-    if (elasticity == 1)
+    if (is_collision_elastic)
     {
         // bounce c1 and c2 off each other
         c1->phys_comp.vel.x = ((m1 - m2) * u1.x + 2 * m2 * u2.x) / (m1 + m2);
@@ -363,6 +406,7 @@ void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2)
     else
     {
         // Merge c2 into c1
+        c1->color = mixTwoColors(c1->color, c2->color);
         // Conservation of Linear Momentum
         c1->phys_comp.vel.x = (m1 * u1.x + m2 * u2.x) / (m1 + m2);
         c1->phys_comp.vel.y = (m1 * u1.y + m2 * u2.y) / (m1 + m2);
@@ -377,7 +421,7 @@ void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2)
     }
 }
 
-void updatePositions()
+void updatePositionsAndCheckBounds()
 {
     for (int i = 0; i < arr_size; i++)
     {
@@ -386,14 +430,39 @@ void updatePositions()
         if (circle_object_arr[i].phys_comp.vel.y)
             circle_object_arr[i].phys_comp.pos.y += circle_object_arr[i].phys_comp.vel.y * dt;
 
-        if (circle_object_arr[i].phys_comp.pos.x + circle_object_arr[i].radius <= 0)
-            circle_object_arr[i].alive = 0;
-        else if (circle_object_arr[i].phys_comp.pos.y + circle_object_arr[i].radius <= 0)
-            circle_object_arr[i].alive = 0;
-        else if (circle_object_arr[i].phys_comp.pos.x - circle_object_arr[i].radius >= WINDOW_WIDTH)
-            circle_object_arr[i].alive = 0;
-        else if (circle_object_arr[i].phys_comp.pos.y - circle_object_arr[i].radius >= WINDOW_HEIGHT)
-            circle_object_arr[i].alive = 0;
+        if (walls_enabled)
+        {
+            if (circle_object_arr[i].phys_comp.pos.x < circle_object_arr[i].radius ||
+                circle_object_arr[i].phys_comp.pos.x > WINDOW_WIDTH - circle_object_arr[i].radius)
+            {
+                circle_object_arr[i].phys_comp.vel.x *= -1;
+                circle_object_arr[i].phys_comp.pos.x = SDL_clamp(
+                    circle_object_arr[i].phys_comp.pos.x,
+                    circle_object_arr[i].radius,
+                    WINDOW_WIDTH - circle_object_arr[i].radius);
+            }
+
+            if (circle_object_arr[i].phys_comp.pos.y < circle_object_arr[i].radius ||
+                circle_object_arr[i].phys_comp.pos.y > WINDOW_HEIGHT - circle_object_arr[i].radius)
+            {
+                circle_object_arr[i].phys_comp.vel.y *= -1;
+                circle_object_arr[i].phys_comp.pos.y = SDL_clamp(
+                    circle_object_arr[i].phys_comp.pos.y,
+                    circle_object_arr[i].radius,
+                    WINDOW_HEIGHT - circle_object_arr[i].radius);
+            }
+        }
+        else
+        {
+            if (circle_object_arr[i].phys_comp.pos.x + circle_object_arr[i].radius < 0 - BUFFER_ZONE)
+                circle_object_arr[i].alive = 0;
+            else if (circle_object_arr[i].phys_comp.pos.y + circle_object_arr[i].radius < 0 - BUFFER_ZONE)
+                circle_object_arr[i].alive = 0;
+            else if (circle_object_arr[i].phys_comp.pos.x - circle_object_arr[i].radius >= WINDOW_WIDTH + BUFFER_ZONE)
+                circle_object_arr[i].alive = 0;
+            else if (circle_object_arr[i].phys_comp.pos.y - circle_object_arr[i].radius >= WINDOW_HEIGHT + BUFFER_ZONE)
+                circle_object_arr[i].alive = 0;
+        }
     }
 }
 
@@ -403,13 +472,13 @@ void RenderFillCircle(CIRCLE_OBJ *circle_obj)
     int y = circle_obj->phys_comp.pos.y;
     int r = circle_obj->radius;
     SDL_SetRenderDrawColor(renderer, circle_obj->color.r, circle_obj->color.g, circle_obj->color.b, SDL_ALPHA_OPAQUE);
-    for (int i = x - r; i < x + r; i++)
+    for (int i = x - r; i <= x + r; i++)
     {
-        if (i < 0 || i >= WINDOW_WIDTH - 1)
+        if (i < 0 || i >= WINDOW_WIDTH)
             continue;
-        for (int j = y - r; j < y + r; j++)
+        for (int j = y - r; j <= y + r; j++)
         {
-            if (j < 0 || j >= WINDOW_HEIGHT - 1)
+            if (j < 0 || j >= WINDOW_HEIGHT)
                 continue;
             double dist_sqr = SDL_pow(i - x, 2) + SDL_pow(j - y, 2);
             if (dist_sqr <= r * r)
@@ -578,20 +647,22 @@ void handleClearCommand(char *input)
 
 void handleSetCommand(char *input)
 {
-    strtok(input, DELIM); // skip the command
+    char *cmd = strtok(input, DELIM);
     char *flag;
     SDL_bool is_flag_provided = SDL_FALSE;
     while ((flag = strtok(NULL, DELIM)) != NULL)
     {
         is_flag_provided = SDL_TRUE;
-        int flag_value;
-        if (sscanf(flag, "--elasticity=%d", &flag_value) == 1 || sscanf(flag, "-e=%d", &flag_value) == 1)
+        int num_arg;
+        int arg_buf_size = 16;
+        char arg_buf[arg_buf_size];
+        if (sscanf(flag, "--elasticity=%d", &num_arg) == 1 || sscanf(flag, "-e=%d", &num_arg) == 1)
         {
-            if (flag_value == PERFECTLY_ELASTIC || flag_value == INELASTIC)
-                elasticity = flag_value;
+            if (num_arg == BOUNCE || num_arg == MERGE)
+                is_collision_elastic = num_arg;
             else
             {
-                printf("set: elasticity can either be 0 or 1, not %d\n", flag_value);
+                printf("set: elasticity can either be 0 or 1, not %d\n", num_arg);
                 printf("Try 'set --help' for more information.\n");
             }
         }
@@ -603,20 +674,40 @@ void handleSetCommand(char *input)
                 printf("set: option requires an argument -- '%s'\n", flag);
                 printf("Try 'set --help' for more information.\n");
             }
-            else if (sscanf(flag_val_str, "%d", &flag_value) != 1)
+            else if (sscanf(flag_val_str, "%d", &num_arg) != 1)
             {
                 printf("set: invalid value for %s: expected integer, got '%s'\n", flag, flag_val_str);
                 printf("Try 'set --help' for more information.\n");
             }
             else
             {
-                if (flag_value == PERFECTLY_ELASTIC || flag_value == INELASTIC)
-                    elasticity = flag_value;
+                if (num_arg == BOUNCE || num_arg == MERGE)
+                    is_collision_elastic = num_arg;
                 else
                 {
-                    printf("set: elasticity can either be 0 or 1, not %d\n", flag_value);
+                    printf("set: elasticity can either be 0 or 1, not %d\n", num_arg);
                     printf("Try 'set --help' for more information.\n");
                 }
+            }
+        }
+        else if (tryParseStrOptionArg(cmd, flag, "-g", "--gravity", arg_buf, arg_buf_size))
+        {
+            if (strcasecmp(arg_buf, "on") == 0)
+            {
+                SDL_LockMutex(shared_data_mutex);
+                gravity_enabled = SDL_TRUE;
+                SDL_UnlockMutex(shared_data_mutex);
+            }
+            else if (strcasecmp(arg_buf, "off") == 0)
+            {
+                SDL_LockMutex(shared_data_mutex);
+                gravity_enabled = SDL_FALSE;
+                SDL_UnlockMutex(shared_data_mutex);
+            }
+            else
+            {
+                printf("set: gravity can either be 'on' or 'off', not %s\n", arg_buf);
+                printf("Try 'set --help' for more information.\n");
             }
         }
         else if (strcasecmp(flag, "--help") == 0)
@@ -626,6 +717,7 @@ void handleSetCommand(char *input)
                    "\n"
                    "Mandatory arguments to long options are mandatory for short options too.\n"
                    "-e, --elasticity[=]{0|1}\tset collisions to be inelastic (0), or perfectly elastic (1)\n"
+                   "-g, --gravity STRING\tturn gravity 'on' or 'off'"
                    "\t--help\tdisplay this help and exit\n");
         }
         else
@@ -699,7 +791,7 @@ SDL_bool tryParseIntOptionArg(char *command_name, char *input_flag, char *short_
 {
     if (short_option == NULL)
         short_option = long_option;
-    SDL_bool parse_success = SDL_FALSE;
+    SDL_bool parse_status = SDL_FALSE;
     if (strcasecmp(input_flag, short_option) == 0 || strcasecmp(input_flag, long_option) == 0)
     {
         char *arg_str = strtok(NULL, DELIM);
@@ -715,17 +807,17 @@ SDL_bool tryParseIntOptionArg(char *command_name, char *input_flag, char *short_
         }
         else
         {
-            parse_success = SDL_TRUE;
+            parse_status = SDL_TRUE;
         }
     }
-    return parse_success;
+    return parse_status;
 }
 
 SDL_bool tryParseFloatOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, double *p_arg_value)
 {
     if (short_option == NULL)
         short_option = long_option;
-    SDL_bool parse_success = SDL_FALSE;
+    SDL_bool parse_status = SDL_FALSE;
     if (strcasecmp(input_flag, short_option) == 0 || strcasecmp(input_flag, long_option) == 0)
     {
         char *arg_str = strtok(NULL, DELIM);
@@ -741,17 +833,17 @@ SDL_bool tryParseFloatOptionArg(char *command_name, char *input_flag, char *shor
         }
         else
         {
-            parse_success = SDL_TRUE;
+            parse_status = SDL_TRUE;
         }
     }
-    return parse_success;
+    return parse_status;
 }
 
 SDL_bool tryParseCharOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, char *p_arg_value)
 {
     if (short_option == NULL)
         short_option = long_option;
-    SDL_bool parse_success = SDL_FALSE;
+    SDL_bool parse_status = SDL_FALSE;
     if (strcasecmp(input_flag, short_option) == 0 || strcasecmp(input_flag, long_option) == 0)
     {
         char *arg_str = strtok(NULL, DELIM);
@@ -767,8 +859,29 @@ SDL_bool tryParseCharOptionArg(char *command_name, char *input_flag, char *short
         }
         else
         {
-            parse_success = SDL_TRUE;
+            parse_status = SDL_TRUE;
         }
     }
-    return parse_success;
+    return parse_status;
+}
+
+SDL_bool tryParseStrOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, char *buffer, int buf_size)
+{
+    if (short_option == NULL)
+        short_option = long_option;
+    SDL_bool parse_status = SDL_FALSE;
+    if (strcasecmp(input_flag, short_option) == 0 || strcasecmp(input_flag, long_option) == 0)
+    {
+        char *arg = strtok(NULL, DELIM);
+        if (arg == NULL)
+        {
+            printf("%s: option requires an argument -- '%s'\n", command_name, input_flag);
+            printf("Try '%s --help' for more information.\n", command_name);
+        }
+        else if (SDL_strlcpy(buffer, arg, buf_size) > 0)
+        {
+            parse_status = SDL_TRUE;
+        }
+    }
+    return parse_status;
 }

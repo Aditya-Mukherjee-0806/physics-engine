@@ -16,5 +16,6 @@ extern const RGB24 RGB_MAGENTA;
 extern const RGB24 RGB_WHITE;
 
 RGB24 generateVividColor();
+RGB24 mixTwoColors(RGB24 color1, RGB24 color2);
 
 #endif
