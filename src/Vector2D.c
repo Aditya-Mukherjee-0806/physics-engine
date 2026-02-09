@@ -1,4 +1,4 @@
-#include "vector2d.h"
+#include "Vector2D.h"
 #include <math.h>
 
 double Vector2D_Magnitude(VECTOR_2D v)

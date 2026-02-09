@@ -6,7 +6,7 @@ SDL_CFLAGS = `sdl2-config --cflags`
 SDL_LIBS = `sdl2-config --libs`
 SRC_DIR = src
 OBJ_DIR = build
-SRC = $(wildcard $(SRC_DIR)/*.c)
+SRC = $(filter-out $(SRC_DIR)/Engine2D.c, $(wildcard $(SRC_DIR)/*.c))
 OBJ = $(SRC:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 TARGET = a.out
 LOG = log.txt

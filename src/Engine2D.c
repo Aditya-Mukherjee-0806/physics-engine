@@ -3,13 +3,12 @@
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
-#include "colors.h"
-#include "vector2d.h"
+#include "Engine2D.h"
 
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 720
-#define FRAMES_PER_SEC 30
-#define DEFAULT_ARR_CAPACITY 128
+// #define FRAMES_PER_SEC 30
+#define DEFAULT_ARR_CAPACITY 512
 #define PIXELS_PER_METER 1024
 #define MIN_RADIUS 8
 #define MAX_RADIUS 16
@@ -17,27 +16,12 @@
 #define LOG_FILE "log.txt"
 #define LOG_INTERVAL_SECS 1
 #define INPUT_BUFFER_SIZE 256
-#define BOUNCE 1
-#define MERGE 0
+#define ELASTIC 1
+#define INELASTIC 0
 #define DELIM " \t\r\n"
 #define DEFAULT_SPEED 196
 #define BUFFER_ZONE 128
 #define STARTUP_FRAMES 5
-
-enum MODES
-{
-    ELASTIC = 1,
-    GRAVITY = 2,
-    MOVE = 4,
-    WALLED = 8,
-    LOG = 16,
-};
-
-typedef struct
-{
-    double mass;
-    VECTOR_2D pos, vel;
-} PHYS_BODY;
 
 typedef struct
 {
@@ -48,190 +32,93 @@ typedef struct
     PHYS_BODY phys_comp;
 } CIRCLE_OBJ;
 
+typedef struct
+{
+    CIRCLE_OBJ *data;
+    int size, cap;
+} OBJECT_ARRAY;
+
+struct ENGINE_2D
+{
+    SDL_Renderer *renderer;
+    SDL_mutex *shared_state_mutex;
+    SDL_Thread *input_thread;
+    FILE *log_file;
+    OBJECT_ARRAY *objects;
+    double dt;
+    int flags;
+};
+
 const double π = 3.141592653589793;
 const double G = 6.6743E-11 * PIXELS_PER_METER * PIXELS_PER_METER * PIXELS_PER_METER;
-const double dt = 1.0 / FRAMES_PER_SEC;
+// const double dt = 1.0 / FRAMES_PER_SEC;
+SDL_bool input_thread_exists = SDL_FALSE;
 
-FILE *log_file;
-SDL_Renderer *renderer;
-CIRCLE_OBJ *circle_object_arr;
-int arr_cap = DEFAULT_ARR_CAPACITY, arr_size = 0;
-SDL_mutex *shared_data_mutex;
-SDL_bool is_simulation_paused = SDL_FALSE;
-SDL_bool is_collision_elastic;
-SDL_bool gravity_enabled;
-SDL_bool spawn_moving;
-SDL_bool walls_enabled;
-SDL_bool logging_enabled;
-
-void setMode(int mode);
 SDL_bool isPointInsideCircle(VECTOR_2D point, CIRCLE_OBJ circle_obj);
 void logArrInfo();
-void logInfoOf(CIRCLE_OBJ circle_obj);
-void createNewCircleObj(RGB24 color, double radius, double mass, VECTOR_2D pos, VECTOR_2D vel);
-void runSimulation();
+void logInfoOf(FILE *log_file, CIRCLE_OBJ *circle_obj);
+void Engine2D_RunSimulation();
 void sanitiseObjectArray();
 void simulateForces();
 void simulateGravitationalForce();
-void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2);
+void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2, SDL_bool is_collision_elastic);
 void updatePositionsAndCheckBounds();
-void RenderFillCircle(CIRCLE_OBJ *circle_obj);
+void RenderFillCircle(SDL_Renderer *renderer, CIRCLE_OBJ *circle_obj);
 int processUserInput(void *data);
-void handleCreateCommand(char *input);
-void handleClearCommand(char *input);
-void handleSetCommand(char *input);
-void handlePauseCommand(char *input);
-void handleResumeCommand(char *input);
-CIRCLE_OBJ *findCircleById(int id);
+void handleCreateCommand(ENGINE_2D *engine, char *input);
+void handleClearCommand(ENGINE_2D *engine, char *input);
+void handleSetCommand(ENGINE_2D *engine, char *input);
+void handlePauseCommand(ENGINE_2D *engine, char *input);
+void handleResumeCommand(ENGINE_2D *engine, char *input);
+CIRCLE_OBJ *findCircleById(OBJECT_ARRAY *objects, int id);
 SDL_bool tryParseIntOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, int *p_arg_value);
 SDL_bool tryParseFloatOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, double *p_arg_value);
 SDL_bool tryParseCharOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, char *p_arg_value);
 SDL_bool tryParseStrOptionArg(char *command_name, char *input_flag, char *short_option, char *long_option, char *buffer, int buf_size);
 
-int main()
+OBJECT_ARRAY *Objects_Init()
 {
-    Uint64 engine_start = SDL_GetPerformanceCounter();
-    setMode(GRAVITY);
-    srand(time(NULL));
-    SDL_Init(SDL_INIT_EVERYTHING);
-    SDL_Window *window = SDL_CreateWindow(
-        "Physics Engine",
-        SDL_WINDOWPOS_CENTERED,
-        SDL_WINDOWPOS_CENTERED,
-        WINDOW_WIDTH,
-        WINDOW_HEIGHT,
-        0);
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    circle_object_arr = (CIRCLE_OBJ *)calloc(arr_cap, sizeof(CIRCLE_OBJ));
-    shared_data_mutex = SDL_CreateMutex();
-    SDL_CreateThread(processUserInput, "input thread", NULL);
-    if (logging_enabled)
-        log_file = fopen(LOG_FILE, "w");
-
-    // for (int i = 0; i < arr_cap; i++)
-    // {
-    //     int radius = MIN_RADIUS + rand() % (MAX_RADIUS - MIN_RADIUS);
-    //     VECTOR_2D pos = {
-    //         .x = rand() % WINDOW_WIDTH,
-    //         .y = rand() % WINDOW_HEIGHT,
-    //     };
-    //     VECTOR_2D vel = {
-    //         .x = (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1) * DEFAULT_SPEED * spawn_moving,
-    //         .y = (double)rand() / RAND_MAX * (rand() % 2 ? 1 : -1) * DEFAULT_SPEED * spawn_moving,
-    //     };
-    //     createNewCircleObj(generateVividColor(), radius, π * radius * radius * DENSITY, pos, vel);
-    // }
-
-    // Central massive body (like the Sun)
-    VECTOR_2D pos1 = {WINDOW_WIDTH / 2.0, WINDOW_HEIGHT / 2.0};
-    VECTOR_2D vel1 = {0, 0};
-    double radius1 = 40;
-    double mass1 = 100000000;
-    createNewCircleObj(RGB_YELLOW, radius1, mass1, pos1, vel1);
-
-    // Smaller orbiting body (like a planet)
-    double distance = 250; // distance from center
-    VECTOR_2D pos2 = {pos1.x + distance, pos1.y};
-    double radius2 = 20; // smaller radius
-    double mass2 = 1000;
-
-    // Circular orbit velocity perpendicular to radius
-    double v = SDL_sqrt(G * mass1 / distance);
-    VECTOR_2D vel2 = {0, -v}; // moving upwards for clockwise orbit
-    createNewCircleObj(RGB_CYAN, radius2, mass2, pos2, vel2);
-
-    int frames = 0, frames_over_dt = 0;
-    double frame_time_sum = 0, max_frame_time = 0, min_frame_time = dt;
-    SDL_bool application_running = SDL_TRUE;
-    while (application_running)
-    {
-        Uint64 frame_start = SDL_GetPerformanceCounter();
-        SDL_Event event;
-        while (SDL_PollEvent(&event))
-        {
-            switch (event.type)
-            {
-            case SDL_QUIT:
-                application_running = SDL_FALSE;
-                break;
-            case SDL_MOUSEBUTTONDOWN:
-                switch (event.button.button)
-                {
-                case SDL_BUTTON_LEFT:
-                    VECTOR_2D point = {event.button.x, event.button.y};
-                    SDL_LockMutex(shared_data_mutex);
-                    for (int i = 0; i < arr_size; i++)
-                    {
-                        if (isPointInsideCircle(point, circle_object_arr[i]))
-                        {
-                            printf("ID: %d\n", circle_object_arr[i].id);
-                            fflush(stdout);
-                            break;
-                        }
-                    }
-                    SDL_UnlockMutex(shared_data_mutex);
-                    break;
-                }
-                break;
-            }
-        }
-        if (is_simulation_paused)
-        {
-            SDL_Delay(dt * 1000);
-            continue;
-        }
-        SDL_SetRenderDrawColor(renderer, RGB_BLACK.r, RGB_BLACK.g, RGB_BLACK.b, SDL_ALPHA_OPAQUE);
-        SDL_RenderClear(renderer);
-        runSimulation();
-        SDL_RenderPresent(renderer);
-        frames++;
-        if (logging_enabled && frames % (LOG_INTERVAL_SECS * FRAMES_PER_SEC) == 0)
-            logArrInfo();
-        Uint64 frame_end = SDL_GetPerformanceCounter();
-        double frame_time = (double)(frame_end - frame_start) / SDL_GetPerformanceFrequency();
-        if (frames > STARTUP_FRAMES)
-        {
-            frame_time_sum += frame_time;
-            if (frame_time < min_frame_time)
-                min_frame_time = frame_time;
-            if (frame_time > max_frame_time)
-                max_frame_time = frame_time;
-        }
-        if (frame_time < dt)
-            SDL_Delay((dt - frame_time) * 1000);
-        else
-        {
-            printf("%d\n", frames);
-            frames_over_dt++;
-        }
-    }
-
-    Uint64 engine_end = SDL_GetPerformanceCounter();
-    printf("Time passed:\t%.2lf s\n", (double)(engine_end - engine_start) / SDL_GetPerformanceFrequency());
-    printf("No. of frames:\t%d\n", frames);
-    printf("Frames over dt:\t%d\n", frames_over_dt);
-    printf("After excluding %d frames during startup:\n", STARTUP_FRAMES);
-    printf("Avg. Frame Time: %.2lf ms\n", frame_time_sum / (frames - STARTUP_FRAMES) * 1000);
-    printf("Min. Frame Time: %.2lf ms\n", min_frame_time * 1000);
-    printf("Max. Frame Time: %.2lf ms\n", max_frame_time * 1000);
-
-    if (logging_enabled)
-        fclose(log_file);
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyMutex(shared_data_mutex);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
-    free(circle_object_arr);
-    return 0;
+    OBJECT_ARRAY *objects = (OBJECT_ARRAY *)malloc(sizeof(OBJECT_ARRAY));
+    objects->cap = DEFAULT_ARR_CAPACITY;
+    objects->size = 0;
+    objects->data = (CIRCLE_OBJ *)malloc(sizeof(CIRCLE_OBJ) * objects->cap);
+    return objects;
 }
 
-void setMode(int mode)
+void *Objects_Free(OBJECT_ARRAY *objects)
 {
-    is_collision_elastic = (mode & ELASTIC) != 0;
-    gravity_enabled = (mode & GRAVITY) != 0;
-    spawn_moving = (mode & MOVE) != 0;
-    walls_enabled = (mode & WALLED) != 0;
-    logging_enabled = (mode & LOG) != 0;
+    free(objects->data);
+    objects->data = NULL;
+    objects->cap = objects->size = 0;
+    free(objects);
+}
+
+ENGINE_2D *Engine2D_Init(void *renderer, void *shared_state_mutex, void *log_file, int fps, int flags)
+{
+    ENGINE_2D *engine = (ENGINE_2D *)malloc(sizeof(ENGINE_2D));
+    engine->renderer = renderer;
+    engine->shared_state_mutex = shared_state_mutex;
+    engine->log_file = log_file;
+    engine->dt = 1.0 / fps;
+    engine->flags = flags;
+    engine->objects = Objects_Init();
+    if ((engine->flags & ENABLE_INPUT) && !input_thread_exists)
+    {
+        engine->input_thread = SDL_CreateThread(processUserInput, "input thread", engine);
+        input_thread_exists = SDL_TRUE;
+    }
+}
+
+void Engine2D_Free(ENGINE_2D *engine)
+{
+    engine->renderer = NULL;
+    engine->shared_state_mutex = NULL;
+    engine->log_file = NULL;
+    engine->dt = 0;
+    engine->flags = 0;
+    Objects_Free(engine->objects);
+    engine->objects = NULL;
+    free(engine);
 }
 
 SDL_bool isPointInsideCircle(VECTOR_2D point, CIRCLE_OBJ circle_obj)
@@ -240,34 +127,34 @@ SDL_bool isPointInsideCircle(VECTOR_2D point, CIRCLE_OBJ circle_obj)
     return Vector2D_Magnitude(dist) <= circle_obj.radius;
 }
 
-void logArrInfo()
+void logArrInfo(ENGINE_2D *engine)
 {
     static int log_count = 1;
-    fprintf(log_file, "ENTRY: #%d\n", log_count);
-    SDL_LockMutex(shared_data_mutex);
-    for (int i = 0; i < arr_size; i++)
+    fprintf(engine->log_file, "ENTRY: #%d\n", log_count);
+    SDL_LockMutex(engine->shared_state_mutex);
+    for (int i = 0; i < engine->objects->size; i++)
     {
-        fprintf(log_file, "Circle %d:\n", circle_object_arr[i].id);
-        logInfoOf(circle_object_arr[i]);
+        fprintf(engine->log_file, "Circle %d:\n", engine->objects->data[i].id);
+        logInfoOf(engine->log_file, engine->objects->data + i);
     }
-    SDL_UnlockMutex(shared_data_mutex);
+    SDL_UnlockMutex(engine->shared_state_mutex);
     log_count++;
 }
 
-void logInfoOf(CIRCLE_OBJ circle_obj)
+void logInfoOf(FILE *log_file, CIRCLE_OBJ *circle_obj)
 {
-    if (!circle_obj.alive)
+    if (!circle_obj->alive)
     {
         fprintf(log_file, "is Dead.\n");
         return;
     }
-    fprintf(log_file, "Radius = %.2lf\n", circle_obj.radius);
-    fprintf(log_file, "Mass = %.2lf\n", circle_obj.phys_comp.mass);
-    fprintf(log_file, "Position = (%.2lf, %.2lf)\n", circle_obj.phys_comp.pos.x, circle_obj.phys_comp.pos.y);
-    fprintf(log_file, "Velocity = (%.2lf, %.2lf)\n", circle_obj.phys_comp.vel.x, circle_obj.phys_comp.vel.y);
+    fprintf(log_file, "Radius = %.2lf\n", circle_obj->radius);
+    fprintf(log_file, "Mass = %.2lf\n", circle_obj->phys_comp.mass);
+    fprintf(log_file, "Position = (%.2lf, %.2lf)\n", circle_obj->phys_comp.pos.x, circle_obj->phys_comp.pos.y);
+    fprintf(log_file, "Velocity = (%.2lf, %.2lf)\n", circle_obj->phys_comp.vel.x, circle_obj->phys_comp.vel.y);
 }
 
-void createNewCircleObj(RGB24 color, double radius, double mass, VECTOR_2D pos, VECTOR_2D vel)
+void Engine2D_CreateCircleObject(ENGINE_2D *engine, RGB24 color, double radius, PHYS_BODY phys_comp)
 {
     static int id = 1;
 
@@ -276,120 +163,116 @@ void createNewCircleObj(RGB24 color, double radius, double mass, VECTOR_2D pos, 
         .id = id++,
         .color = color,
         .radius = radius,
-        .phys_comp = (PHYS_BODY){
-            .mass = mass,
-            .pos = pos,
-            .vel = vel,
-        },
+        .phys_comp = phys_comp,
     };
 
-    SDL_LockMutex(shared_data_mutex);
+    SDL_LockMutex(engine->shared_state_mutex);
 
-    if (arr_size >= arr_cap)
+    if (engine->objects->size >= engine->objects->cap)
     {
-        CIRCLE_OBJ *temp = (CIRCLE_OBJ *)realloc(circle_object_arr, arr_cap * 4 * sizeof(CIRCLE_OBJ));
+        CIRCLE_OBJ *temp = (CIRCLE_OBJ *)realloc(engine->objects->data, engine->objects->cap * 4 * sizeof(CIRCLE_OBJ));
         if (temp)
         {
-            arr_cap *= 4;
-            circle_object_arr = temp;
+            engine->objects->cap *= 4;
+            engine->objects->data = temp;
         }
         else
             fprintf(stderr, "REALLOCATION FAILED in %s\n", __func__);
     }
-    circle_object_arr[arr_size++] = circle_obj;
+    engine->objects->data[engine->objects->size++] = circle_obj;
 
-    SDL_UnlockMutex(shared_data_mutex);
+    SDL_UnlockMutex(engine->shared_state_mutex);
 }
 
-void runSimulation()
+void Engine2D_RunSimulation(ENGINE_2D *engine)
 {
-    SDL_LockMutex(shared_data_mutex);
+    SDL_LockMutex(engine->shared_state_mutex);
 
-    sanitiseObjectArray();
-    simulateForces();
-    updatePositionsAndCheckBounds();
-    for (int i = 0; i < arr_size; i++)
-        RenderFillCircle(circle_object_arr + i);
+    sanitiseObjectArray(engine->objects);
+    simulateForces(engine);
+    updatePositionsAndCheckBounds(engine);
+    for (int i = 0; i < engine->objects->size; i++)
+        RenderFillCircle(engine->renderer, engine->objects->data + i);
 
-    SDL_UnlockMutex(shared_data_mutex);
+    SDL_UnlockMutex(engine->shared_state_mutex);
 }
 
-void sanitiseObjectArray()
+void sanitiseObjectArray(OBJECT_ARRAY *objects)
 {
-    int i = 0, j = arr_size;
+    int i = 0, j = objects->size;
     while (i < j)
     {
-        if (circle_object_arr[i].alive)
+        if (objects->data[i].alive)
             i++;
         else
-            circle_object_arr[i] = circle_object_arr[--j];
+            objects->data[i] = objects->data[--j];
     }
     // all elements before i are alive, and all elements from j onwards are dead
     // when i == j, the loop ends and i points to a dead element
     // therefore total num of alive elements is i
-    arr_size = i;
+    objects->size = i;
 
-    if (arr_size < arr_cap / 8)
+    if (objects->size < objects->cap / 8)
     {
-        CIRCLE_OBJ *temp = (CIRCLE_OBJ *)realloc(circle_object_arr, arr_cap / 2 * sizeof(CIRCLE_OBJ));
+        CIRCLE_OBJ *temp = (CIRCLE_OBJ *)realloc(objects->data, objects->cap / 2 * sizeof(CIRCLE_OBJ));
         if (temp)
         {
-            arr_cap /= 2;
-            circle_object_arr = temp;
+            objects->cap /= 2;
+            objects->data = temp;
         }
         else
             fprintf(stderr, "REALLOCATION FAILED in %s\n", __func__);
     }
 }
 
-void simulateForces()
+void simulateForces(ENGINE_2D *engine)
 {
-    simulateGravitationalForce();
+    simulateGravitationalForce(engine);
 }
 
-void simulateGravitationalForce()
+void simulateGravitationalForce(ENGINE_2D *engine)
 {
-    for (int i = 0; i < arr_size - 1; i++)
+    for (int i = 0; i < engine->objects->size - 1; i++)
     {
-        if (!circle_object_arr[i].alive)
+        if (!engine->objects->data[i].alive)
             continue;
-        for (int j = i + 1; j < arr_size; j++)
+        for (int j = i + 1; j < engine->objects->size; j++)
         {
-            if (!circle_object_arr[j].alive)
+            if (!engine->objects->data[j].alive)
                 continue;
-            double m1 = circle_object_arr[i].phys_comp.mass;
-            double m2 = circle_object_arr[j].phys_comp.mass;
-            VECTOR_2D pos1 = circle_object_arr[i].phys_comp.pos;
-            VECTOR_2D pos2 = circle_object_arr[j].phys_comp.pos;
-            VECTOR_2D dist_vec = Vector2D_Difference(pos2, pos1);
-            double dist = Vector2D_Magnitude(dist_vec);
-            if (dist < circle_object_arr[i].radius + circle_object_arr[j].radius)
+            double m1 = engine->objects->data[i].phys_comp.mass;
+            double m2 = engine->objects->data[j].phys_comp.mass;
+            VECTOR_2D pos1 = engine->objects->data[i].phys_comp.pos;
+            VECTOR_2D pos2 = engine->objects->data[j].phys_comp.pos;
+            VECTOR_2D displacement = Vector2D_Difference(pos2, pos1);
+            double dist = Vector2D_Magnitude(displacement);
+            if (dist < engine->objects->data[i].radius + engine->objects->data[j].radius)
             {
-                handleCollision(circle_object_arr + i, circle_object_arr + j);
-                if (is_collision_elastic)
+                handleCollision(engine->objects->data + i, engine->objects->data + j, engine->flags & ELASTIC_COLLISION);
+                if (engine->flags & ELASTIC_COLLISION)
                     // stop calculating with dead circles[j] in case of merge
                     continue;
             }
-            if (gravity_enabled)
+            if (engine->flags & ENABLE_GRAVITY)
             {
                 double force_magnitude = G * m1 * m2 / SDL_pow(dist, 2);
                 VECTOR_2D force = Vector2D_ScalarProduct(
-                    Vector2D_Normalised(dist_vec),
+                    Vector2D_Normalised(displacement),
                     force_magnitude);
 
-                circle_object_arr[i].phys_comp.vel = Vector2D_Sum(
-                    circle_object_arr[i].phys_comp.vel,
-                    Vector2D_ScalarProduct(force, dt / m1));
+                engine->objects->data[i].phys_comp.vel = Vector2D_Sum(
+                    engine->objects->data[i].phys_comp.vel,
+                    Vector2D_ScalarProduct(force, engine->dt / m1));
 
-                circle_object_arr[j].phys_comp.vel = Vector2D_Difference(
-                    circle_object_arr[j].phys_comp.vel,
-                    Vector2D_ScalarProduct(force, dt / m2));
+                engine->objects->data[j].phys_comp.vel = Vector2D_Difference(
+                    engine->objects->data[j].phys_comp.vel,
+                    Vector2D_ScalarProduct(force, engine->dt / m2));
             }
         }
     }
 }
 
-void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2)
+void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2, SDL_bool is_collision_elastic)
 {
     double m1 = c1->phys_comp.mass;
     double m2 = c2->phys_comp.mass;
@@ -411,6 +294,12 @@ void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2)
                 Vector2D_ScalarProduct(u2, m2 - m1),
                 Vector2D_ScalarProduct(u1, m1 * 2)),
             1 / (m1 + m2));
+
+        // Push c1 outside of c2
+        VECTOR_2D displacement = Vector2D_Difference(pos1, pos2);
+        double push_back_magnitude = c1->radius + c2->radius - Vector2D_Magnitude(displacement);
+        VECTOR_2D push_back_vec = Vector2D_ScalarProduct(Vector2D_Normalised(displacement), push_back_magnitude);
+        c1->phys_comp.pos = Vector2D_Sum(c1->phys_comp.pos, push_back_vec);
     }
     else
     {
@@ -436,51 +325,51 @@ void handleCollision(CIRCLE_OBJ *c1, CIRCLE_OBJ *c2)
     }
 }
 
-void updatePositionsAndCheckBounds()
+void updatePositionsAndCheckBounds(ENGINE_2D *engine)
 {
-    for (int i = 0; i < arr_size; i++)
+    for (int i = 0; i < engine->objects->size; i++)
     {
-        circle_object_arr[i].phys_comp.pos = Vector2D_Sum(
-            circle_object_arr[i].phys_comp.pos,
-            Vector2D_ScalarProduct(circle_object_arr[i].phys_comp.vel, dt));
+        engine->objects->data[i].phys_comp.pos = Vector2D_Sum(
+            engine->objects->data[i].phys_comp.pos,
+            Vector2D_ScalarProduct(engine->objects->data[i].phys_comp.vel, engine->dt));
 
-        if (walls_enabled)
+        if (engine->flags & BOUNDING_BOX)
         {
-            if (circle_object_arr[i].phys_comp.pos.x < circle_object_arr[i].radius ||
-                circle_object_arr[i].phys_comp.pos.x > WINDOW_WIDTH - circle_object_arr[i].radius)
+            if (engine->objects->data[i].phys_comp.pos.x < engine->objects->data[i].radius ||
+                engine->objects->data[i].phys_comp.pos.x > WINDOW_WIDTH - engine->objects->data[i].radius)
             {
-                circle_object_arr[i].phys_comp.vel.x *= -1;
-                circle_object_arr[i].phys_comp.pos.x = SDL_clamp(
-                    circle_object_arr[i].phys_comp.pos.x,
-                    circle_object_arr[i].radius,
-                    WINDOW_WIDTH - circle_object_arr[i].radius);
+                engine->objects->data[i].phys_comp.vel.x *= -1;
+                engine->objects->data[i].phys_comp.pos.x = SDL_clamp(
+                    engine->objects->data[i].phys_comp.pos.x,
+                    engine->objects->data[i].radius,
+                    WINDOW_WIDTH - engine->objects->data[i].radius);
             }
 
-            if (circle_object_arr[i].phys_comp.pos.y < circle_object_arr[i].radius ||
-                circle_object_arr[i].phys_comp.pos.y > WINDOW_HEIGHT - circle_object_arr[i].radius)
+            if (engine->objects->data[i].phys_comp.pos.y < engine->objects->data[i].radius ||
+                engine->objects->data[i].phys_comp.pos.y > WINDOW_HEIGHT - engine->objects->data[i].radius)
             {
-                circle_object_arr[i].phys_comp.vel.y *= -1;
-                circle_object_arr[i].phys_comp.pos.y = SDL_clamp(
-                    circle_object_arr[i].phys_comp.pos.y,
-                    circle_object_arr[i].radius,
-                    WINDOW_HEIGHT - circle_object_arr[i].radius);
+                engine->objects->data[i].phys_comp.vel.y *= -1;
+                engine->objects->data[i].phys_comp.pos.y = SDL_clamp(
+                    engine->objects->data[i].phys_comp.pos.y,
+                    engine->objects->data[i].radius,
+                    WINDOW_HEIGHT - engine->objects->data[i].radius);
             }
         }
         else
         {
-            if (circle_object_arr[i].phys_comp.pos.x + circle_object_arr[i].radius < 0 - BUFFER_ZONE)
-                circle_object_arr[i].alive = 0;
-            else if (circle_object_arr[i].phys_comp.pos.y + circle_object_arr[i].radius < 0 - BUFFER_ZONE)
-                circle_object_arr[i].alive = 0;
-            else if (circle_object_arr[i].phys_comp.pos.x - circle_object_arr[i].radius >= WINDOW_WIDTH + BUFFER_ZONE)
-                circle_object_arr[i].alive = 0;
-            else if (circle_object_arr[i].phys_comp.pos.y - circle_object_arr[i].radius >= WINDOW_HEIGHT + BUFFER_ZONE)
-                circle_object_arr[i].alive = 0;
+            if (engine->objects->data[i].phys_comp.pos.x + engine->objects->data[i].radius < 0 - BUFFER_ZONE)
+                engine->objects->data[i].alive = 0;
+            else if (engine->objects->data[i].phys_comp.pos.y + engine->objects->data[i].radius < 0 - BUFFER_ZONE)
+                engine->objects->data[i].alive = 0;
+            else if (engine->objects->data[i].phys_comp.pos.x - engine->objects->data[i].radius >= WINDOW_WIDTH + BUFFER_ZONE)
+                engine->objects->data[i].alive = 0;
+            else if (engine->objects->data[i].phys_comp.pos.y - engine->objects->data[i].radius >= WINDOW_HEIGHT + BUFFER_ZONE)
+                engine->objects->data[i].alive = 0;
         }
     }
 }
 
-void RenderFillCircle(CIRCLE_OBJ *circle_obj)
+void RenderFillCircle(SDL_Renderer *renderer, CIRCLE_OBJ *circle_obj)
 {
     int x = circle_obj->phys_comp.pos.x;
     int y = circle_obj->phys_comp.pos.y;
@@ -503,6 +392,7 @@ void RenderFillCircle(CIRCLE_OBJ *circle_obj)
 
 int SDLCALL processUserInput(void *data)
 {
+    ENGINE_2D *engine = (ENGINE_2D *)data;
     printf("Supported Commands: create, clear, set, pause, resume\n");
     while (SDL_TRUE)
     {
@@ -512,21 +402,21 @@ int SDLCALL processUserInput(void *data)
         fgets(input, INPUT_BUFFER_SIZE, stdin);
         sscanf(input, "%s", command);
         if (strcasecmp(command, "create") == 0)
-            handleCreateCommand(input);
+            handleCreateCommand(engine, input);
         else if (strcasecmp(command, "clear") == 0)
-            handleClearCommand(input);
+            handleClearCommand(engine, input);
         else if (strcasecmp(command, "set") == 0)
-            handleSetCommand(input);
+            handleSetCommand(engine, input);
         else if (strcasecmp(command, "pause") == 0)
-            handlePauseCommand(input);
+            handlePauseCommand(engine, input);
         else if (strcasecmp(command, "resume") == 0)
-            handleResumeCommand(input);
+            handleResumeCommand(engine, input);
         else
             printf("command not supported: '%s'\n", command);
     }
 }
 
-void handleCreateCommand(char *input)
+void handleCreateCommand(ENGINE_2D *engine, char *input)
 {
     char *command = strtok(input, DELIM);
     char *flag;
@@ -593,24 +483,24 @@ void handleCreateCommand(char *input)
         else if (tryParseFloatOptionArg(command, flag, NULL, "--vely", &vel.y))
             ;
     }
-    createNewCircleObj(color, radius, mass, pos, vel);
+    Engine2D_CreateCircleObject(engine, color, radius, (PHYS_BODY){mass, pos, vel});
 }
 
-void handleClearCommand(char *input)
+void handleClearCommand(ENGINE_2D *engine, char *input)
 {
-    SDL_LockMutex(shared_data_mutex);
+    SDL_LockMutex(engine->shared_state_mutex);
     strtok(input, DELIM); // skip the command
     char *flag = strtok(NULL, DELIM);
     int id;
     if (flag == NULL || strcasecmp(flag, "--all") == 0 || strcasecmp(flag, "-a") == 0)
     {
         // clear the object array before the next frame
-        arr_size = 0;
-        arr_cap = DEFAULT_ARR_CAPACITY;
+        engine->objects->size = 0;
+        engine->objects->cap = DEFAULT_ARR_CAPACITY;
     }
     else if (sscanf(flag, "--id=%d", &id) == 1)
     {
-        CIRCLE_OBJ *circleFound = findCircleById(id);
+        CIRCLE_OBJ *circleFound = findCircleById(engine->objects, id);
         if (circleFound != NULL)
             circleFound->alive = SDL_FALSE;
         else
@@ -633,7 +523,7 @@ void handleClearCommand(char *input)
             }
             else
             {
-                CIRCLE_OBJ *circleFound = findCircleById(id);
+                CIRCLE_OBJ *circleFound = findCircleById(engine->objects, id);
                 if (circleFound != NULL)
                     circleFound->alive = SDL_FALSE;
                 else
@@ -656,10 +546,10 @@ void handleClearCommand(char *input)
         printf("Try 'clear --help' for more information.\n");
     }
 
-    SDL_UnlockMutex(shared_data_mutex);
+    SDL_UnlockMutex(engine->shared_state_mutex);
 }
 
-void handleSetCommand(char *input)
+void handleSetCommand(ENGINE_2D *engine, char *input)
 {
     char *cmd = strtok(input, DELIM);
     char *flag;
@@ -672,8 +562,10 @@ void handleSetCommand(char *input)
         char arg_buf[arg_buf_size];
         if (sscanf(flag, "--elasticity=%d", &num_arg) == 1 || sscanf(flag, "-e=%d", &num_arg) == 1)
         {
-            if (num_arg == BOUNCE || num_arg == MERGE)
-                is_collision_elastic = num_arg;
+            if (num_arg == ELASTIC && !(engine->flags & ELASTIC_COLLISION))
+                engine->flags |= ELASTIC_COLLISION;
+            else if (num_arg == INELASTIC && (engine->flags & ELASTIC_COLLISION))
+                engine->flags &= ~ELASTIC_COLLISION;
             else
             {
                 printf("set: elasticity can either be 0 or 1, not %d\n", num_arg);
@@ -695,8 +587,10 @@ void handleSetCommand(char *input)
             }
             else
             {
-                if (num_arg == BOUNCE || num_arg == MERGE)
-                    is_collision_elastic = num_arg;
+                if (num_arg == ELASTIC && !(engine->flags & ELASTIC_COLLISION))
+                    engine->flags |= ELASTIC_COLLISION;
+                else if (num_arg == INELASTIC && (engine->flags & ELASTIC_COLLISION))
+                    engine->flags &= ~ELASTIC_COLLISION;
                 else
                 {
                     printf("set: elasticity can either be 0 or 1, not %d\n", num_arg);
@@ -707,17 +601,9 @@ void handleSetCommand(char *input)
         else if (tryParseStrOptionArg(cmd, flag, "-g", "--gravity", arg_buf, arg_buf_size))
         {
             if (strcasecmp(arg_buf, "on") == 0)
-            {
-                SDL_LockMutex(shared_data_mutex);
-                gravity_enabled = SDL_TRUE;
-                SDL_UnlockMutex(shared_data_mutex);
-            }
+                engine->flags |= ENABLE_GRAVITY;
             else if (strcasecmp(arg_buf, "off") == 0)
-            {
-                SDL_LockMutex(shared_data_mutex);
-                gravity_enabled = SDL_FALSE;
-                SDL_UnlockMutex(shared_data_mutex);
-            }
+                engine->flags &= ~ENABLE_GRAVITY;
             else
             {
                 printf("set: gravity can either be 'on' or 'off', not %s\n", arg_buf);
@@ -747,14 +633,12 @@ void handleSetCommand(char *input)
     }
 }
 
-void handlePauseCommand(char *input)
+void handlePauseCommand(ENGINE_2D *engine, char *input)
 {
     strtok(input, DELIM); // skip the command
     char *flag = strtok(NULL, DELIM);
     if (flag == NULL)
-    {
-        is_simulation_paused = SDL_TRUE;
-    }
+        engine->flags |= PAUSED;
     else if (strcasecmp(flag, "--help") == 0)
     {
         printf("Usage: pause [OPTION]\n"
@@ -769,14 +653,12 @@ void handlePauseCommand(char *input)
     }
 }
 
-void handleResumeCommand(char *input)
+void handleResumeCommand(ENGINE_2D *engine, char *input)
 {
     strtok(input, DELIM); // skip the command
     char *flag = strtok(NULL, DELIM);
     if (flag == NULL)
-    {
-        is_simulation_paused = SDL_FALSE;
-    }
+        engine->flags &= ~PAUSED;
     else if (strcasecmp(flag, "--help") == 0)
     {
         printf("Usage: resume [OPTION]\n"
@@ -791,12 +673,12 @@ void handleResumeCommand(char *input)
     }
 }
 
-CIRCLE_OBJ *findCircleById(int id)
+CIRCLE_OBJ *findCircleById(OBJECT_ARRAY *objects, int id)
 {
-    for (int i = 0; i < arr_size; i++)
+    for (int i = 0; i < objects->size; i++)
     {
-        if (circle_object_arr[i].id == id)
-            return circle_object_arr + i;
+        if (objects->data[i].id == id)
+            return objects->data + i;
     }
     return NULL;
 }

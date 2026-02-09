@@ -50,4 +50,4 @@ Aditya Mukherjee - <adityamukherjee082006@gmail.com>
 
 ## Known Issues
 
-Sometimes if elasticity is set to 1, objects enter inside each other during collision, in which case, they may dart off the screen if their centers overlap.
+**[FIXED]** Sometimes if elasticity is set to 1, objects enter inside each other during collision, in which case, they may dart off the screen if their centers overlap.
