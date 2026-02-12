@@ -6,13 +6,13 @@
 #include "colors.h"
 #include "Vector2D.h"
 
-#define WINDOW_WIDTH 1280
-#define WINDOW_HEIGHT 720
+#define WINDOW_WIDTH 128
+#define WINDOW_HEIGHT 64
 #define FRAMES_PER_SEC 30
 #define DEFAULT_ARR_CAPACITY 256
 #define PIXELS_PER_METER 1024
-#define MIN_RADIUS 8
-#define MAX_RADIUS 16
+#define MIN_RADIUS 2
+#define MAX_RADIUS 4
 #define DENSITY 768
 #define LOG_FILE "log.txt"
 #define LOG_INTERVAL_SECS 1
@@ -20,7 +20,7 @@
 #define ELASTIC 1
 #define INELASTIC 0
 #define DELIM " \t\r\n"
-#define DEFAULT_SPEED 196
+#define DEFAULT_SPEED 64
 #define BUFFER_ZONE 128
 #define STARTUP_FRAMES 5
 
@@ -91,7 +91,7 @@ SDL_bool tryParseStrOptionArg(char *command_name, char *input_flag, char *short_
 int main()
 {
     Uint64 engine_start = SDL_GetPerformanceCounter();
-    setMode(ELASTIC | MOVE | WALLED);
+    setMode(ELASTIC_COLLISION | MOVE | WALLED);
     srand(time(NULL));
     SDL_Init(SDL_INIT_EVERYTHING);
     SDL_Window *window = SDL_CreateWindow(
@@ -108,7 +108,7 @@ int main()
     if (logging_enabled)
         log_file = fopen(LOG_FILE, "w");
 
-    for (int i = 0; i < arr_cap; i++)
+    for (int i = 0; i < (48 < arr_cap ? 48 : arr_cap); i++)
     {
         int radius = MIN_RADIUS + rand() % (MAX_RADIUS - MIN_RADIUS);
         VECTOR_2D pos = {
@@ -201,7 +201,7 @@ int main()
             SDL_Delay((dt - frame_time) * 1000);
         else
         {
-            printf("%d\n", frames);
+            //printf("%d\n", frames);
             frames_over_dt++;
         }
     }
